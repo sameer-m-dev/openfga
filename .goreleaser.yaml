@@ -64,9 +64,6 @@ release:
     owner: sameer-m-dev
     name: openfga
 
-sboms:
-  - artifacts: archive
-
 archives:
   - files:
       - assets
