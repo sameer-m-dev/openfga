@@ -98,17 +98,18 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 
 	// Check if the instance is read-only and set the appropriate session variables.
 	if cfg.ReadOnly {
+		cfg.Logger.Info("setting read-only session variables\n")
 		op, err := db.Exec("SET yb_read_from_followers = on;")
 		if err != nil {
 			return nil, fmt.Errorf("setting yb_read_from_followers: %w", err)
 		}
-		cfg.Logger.Debug("set yb_read_from_followers: ", zap.Any("result", op))
+		cfg.Logger.Info("set yb_read_from_followers: ", zap.Any("result", op))
 
 		op, err = db.Exec("SET default_transaction_read_only = on;")
 		if err != nil {
 			return nil, fmt.Errorf("setting default_transaction_read_only: %w", err)
 		}
-		cfg.Logger.Debug("set default_transaction_read_only: ", zap.Any("result", op))
+		cfg.Logger.Info("set default_transaction_read_only: ", zap.Any("result", op))
 	}
 
 	policy := backoff.NewExponentialBackOff()
