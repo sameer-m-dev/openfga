@@ -58,7 +58,7 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: openfga/openfga
+          repository: shopsense/openfga
           short-description: ${{ github.event.repository.description }}
 
       - name: Generate binary hashes
