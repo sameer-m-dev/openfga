@@ -143,6 +143,8 @@ func NewRunCommand() *cobra.Command {
 
 	flags.Duration("datastore-conn-max-lifetime", defaultConfig.Datastore.ConnMaxLifetime, "the maximum amount of time a connection to the datastore may be reused")
 
+	flags.Bool("datastore-read-only", defaultConfig.Datastore.ReadOnlyMode, "enable/disable read-only mode for the datastore")
+
 	flags.Bool("datastore-metrics-enabled", defaultConfig.Datastore.Metrics.Enabled, "enable/disable sql metrics")
 
 	flags.Bool("playground-enabled", defaultConfig.Playground.Enabled, "enable/disable the OpenFGA Playground")
@@ -325,6 +327,15 @@ func (s *ServerContext) datastoreConfig(config *serverconfig.Config) (storage.Op
 
 	if config.Datastore.Metrics.Enabled {
 		datastoreOptions = append(datastoreOptions, sqlcommon.WithMetrics())
+	}
+
+	// If the datastore is running in read-only mode, we need to enable the read-only mode option
+	if config.Datastore.ReadOnlyMode {
+		if config.Datastore.Engine != "postgres" {
+			return nil, errors.New("read-only mode is only supported for postgres")
+		}
+		s.Logger.Info("datastore is running in read-only mode")
+		datastoreOptions = append(datastoreOptions, sqlcommon.WithReadOnlyMode())
 	}
 
 	dsCfg := sqlcommon.NewConfig(datastoreOptions...)

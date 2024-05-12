@@ -36,6 +36,7 @@ type Config struct {
 	MaxIdleConns    int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
+	ReadOnlyMode    bool
 
 	ExportMetrics bool
 }
@@ -118,6 +119,14 @@ func WithConnMaxLifetime(d time.Duration) DatastoreOption {
 func WithMetrics() DatastoreOption {
 	return func(cfg *Config) {
 		cfg.ExportMetrics = true
+	}
+}
+
+// WithReadOnlyMode returns a DatastoreOption that
+// enables the read-only mode in the Config.
+func WithReadOnlyMode() DatastoreOption {
+	return func(cfg *Config) {
+		cfg.ReadOnlyMode = true
 	}
 }
 
