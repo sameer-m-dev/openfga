@@ -97,7 +97,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 	}
 
 	// Check if the instance is read-only and set the appropriate session variables.
-	if cfg.ReadOnlyMode {
+	if cfg.ReadOnly {
 		op, err := db.Exec("SET yb_read_from_followers = on;")
 		if err != nil {
 			return nil, fmt.Errorf("setting yb_read_from_followers: %w", err)

@@ -23,6 +23,7 @@ const (
 	datastoreURIFlag      = "datastore-uri"
 	datastoreUsernameFlag = "datastore-username"
 	datastorePasswordFlag = "datastore-password"
+	datastoreReadOnlyFlag = "datastore-read-only"
 	versionFlag           = "version"
 	timeoutFlag           = "timeout"
 	verboseMigrationFlag  = "verbose"
@@ -46,6 +47,7 @@ func NewMigrateCommand() *cobra.Command {
 	flags.Uint(versionFlag, 0, "the version to migrate to (if omitted the latest schema will be used)")
 	flags.Duration(timeoutFlag, 1*time.Minute, "a timeout for the time it takes the migrate process to connect to the database")
 	flags.Bool(verboseMigrationFlag, false, "enable verbose migration logs (default false)")
+	flags.Bool(datastoreReadOnlyFlag, false, "mark the database as a read-only engine (for example, document db in Mongo with read-only subscriptions)")
 
 	// NOTE: if you add a new flag here, update the function below, too
 
@@ -62,6 +64,7 @@ func runMigration(_ *cobra.Command, _ []string) error {
 	verbose := viper.GetBool(verboseMigrationFlag)
 	username := viper.GetString(datastoreUsernameFlag)
 	password := viper.GetString(datastorePasswordFlag)
+	readOnly := viper.GetBool(datastoreReadOnlyFlag)
 
 	goose.SetLogger(goose.NopLogger())
 	goose.SetVerbose(verbose)
@@ -72,6 +75,9 @@ func runMigration(_ *cobra.Command, _ []string) error {
 		log.Println("no migrations to run for `memory` datastore")
 		return nil
 	case "mysql":
+		if readOnly {
+			return fmt.Errorf("read-only flag is not supported for MySQL")
+		}
 		driver = "mysql"
 		migrationsPath = assets.MySQLMigrationDir
 
@@ -91,6 +97,10 @@ func runMigration(_ *cobra.Command, _ []string) error {
 	case "postgres":
 		driver = "pgx"
 		migrationsPath = assets.PostgresMigrationDir
+
+		if readOnly {
+			return fmt.Errorf("cannot run migrations in read-only mode for PostgreSQL")
+		}
 
 		// Parse the database uri with url.Parse() and update username/password, if set via flags
 		dbURI, err := url.Parse(uri)

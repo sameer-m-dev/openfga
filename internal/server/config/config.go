@@ -75,8 +75,8 @@ type DatastoreConfig struct {
 	// Metrics is configuration for the Datastore metrics.
 	Metrics DatastoreMetricsConfig
 
-	// ReadOnlyMode is a flag to enable read-only mode for the datastore.
-	ReadOnlyMode bool
+	// ReadOnly is a flag to enable read-only mode for the datastore.
+	ReadOnly bool
 }
 
 // GRPCConfig defines OpenFGA server configurations for grpc server specific settings.
@@ -405,7 +405,7 @@ func DefaultConfig() *Config {
 			MaxCacheSize: DefaultMaxAuthorizationModelCacheSize,
 			MaxIdleConns: 10,
 			MaxOpenConns: 30,
-			ReadOnlyMode: false,
+			ReadOnly:     false,
 		},
 		GRPC: GRPCConfig{
 			Addr: "0.0.0.0:8081",

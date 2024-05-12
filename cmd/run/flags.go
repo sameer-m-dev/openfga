@@ -99,6 +99,9 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("datastore.metrics.enabled", flags.Lookup("datastore-metrics-enabled"))
 		util.MustBindEnv("datastore.metrics.enabled", "OPENFGA_DATASTORE_METRICS_ENABLED")
 
+		util.MustBindPFlag("datastore.readOnly", flags.Lookup("datastore-read-only"))
+		util.MustBindEnv("datastore.readOnly", "OPENFGA_DATASTORE_READ_ONLY")
+
 		util.MustBindPFlag("playground.enabled", flags.Lookup("playground-enabled"))
 		util.MustBindEnv("playground.enabled", "OPENFGA_PLAYGROUND_ENABLED")
 
