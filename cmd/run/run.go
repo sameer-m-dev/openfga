@@ -145,7 +145,7 @@ func NewRunCommand() *cobra.Command {
 
 	flags.Bool("datastore-read-only", defaultConfig.Datastore.ReadOnly, "enable/disable read-only mode for the datastore")
 
-	flags.Bool("datastore-prepared-statement-cache", defaultConfig.Datastore.PreparedStmtsCache, "enable/disable prepared statement caching for the datastore")
+	flags.Bool("datastore-prepared-statement-cache", defaultConfig.Datastore.PreparedStmtCache, "enable/disable prepared statement caching for the datastore")
 
 	flags.Bool("datastore-metrics-enabled", defaultConfig.Datastore.Metrics.Enabled, "enable/disable sql metrics")
 
@@ -340,13 +340,12 @@ func (s *ServerContext) datastoreConfig(config *serverconfig.Config) (storage.Op
 		datastoreOptions = append(datastoreOptions, sqlcommon.WithReadOnly())
 	}
 
-	// If the datastore is running in read-only mode, we need to enable the read-only mode option
-	if config.Datastore.PreparedStmtsCache {
+	if config.Datastore.PreparedStmtCache {
 		if config.Datastore.Engine != "postgres" {
 			return nil, errors.New("prepared statement caching is only supported for postgres")
 		}
-		s.Logger.Info("datastore is running in read-only mode")
-		datastoreOptions = append(datastoreOptions, sqlcommon.WithPreparedStmtsCache())
+		s.Logger.Info("prepared statement caching is enabled")
+		datastoreOptions = append(datastoreOptions, sqlcommon.WithPreparedStmtCache())
 	}
 
 	dsCfg := sqlcommon.NewConfig(datastoreOptions...)

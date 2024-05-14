@@ -146,7 +146,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 	}
 
 	var stbl sq.StatementBuilderType
-	if cfg.PreparedStmtsCache {
+	if cfg.PreparedStmtCache {
 		// StmtCache caches Prepared Stmts for you
 		dbCache := sq.NewStmtCache(db)
 		stbl = sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbCache)
