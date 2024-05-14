@@ -102,6 +102,9 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("datastore.readOnly", flags.Lookup("datastore-read-only"))
 		util.MustBindEnv("datastore.readOnly", "OPENFGA_DATASTORE_READ_ONLY")
 
+		util.MustBindPFlag("datastore.preparedStmtCache", flags.Lookup("datastore-prepared-statement-cache"))
+		util.MustBindEnv("datastore.preparedStmtCache", "OPENFGA_DATASTORE_PREPARED_STATEMENT_CACHE")
+
 		util.MustBindPFlag("playground.enabled", flags.Lookup("playground-enabled"))
 		util.MustBindEnv("playground.enabled", "OPENFGA_PLAYGROUND_ENABLED")
 

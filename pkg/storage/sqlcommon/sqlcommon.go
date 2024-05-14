@@ -32,11 +32,12 @@ type Config struct {
 	MaxTuplesPerWriteField int
 	MaxTypesPerModelField  int
 
-	MaxOpenConns    int
-	MaxIdleConns    int
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
-	ReadOnly        bool
+	MaxOpenConns       int
+	MaxIdleConns       int
+	ConnMaxIdleTime    time.Duration
+	ConnMaxLifetime    time.Duration
+	ReadOnly           bool
+	PreparedStmtsCache bool
 
 	ExportMetrics bool
 }
@@ -127,6 +128,14 @@ func WithMetrics() DatastoreOption {
 func WithReadOnly() DatastoreOption {
 	return func(cfg *Config) {
 		cfg.ReadOnly = true
+	}
+}
+
+// WithPreparedStmtsCache returns a DatastoreOption that
+// enables the prepared statements cache in the Config.
+func WithPreparedStmtsCache() DatastoreOption {
+	return func(cfg *Config) {
+		cfg.PreparedStmtsCache = true
 	}
 }
 

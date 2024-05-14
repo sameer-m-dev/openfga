@@ -77,6 +77,9 @@ type DatastoreConfig struct {
 
 	// ReadOnly is a flag to enable read-only mode for the datastore.
 	ReadOnly bool
+
+	// PreparedStmtsCache is a flag to enable SQL prepared statements caching.
+	PreparedStmtsCache bool
 }
 
 // GRPCConfig defines OpenFGA server configurations for grpc server specific settings.
@@ -401,13 +404,14 @@ func DefaultConfig() *Config {
 		RequestDurationDatastoreQueryCountBuckets: []string{"50", "200"},
 		RequestDurationDispatchCountBuckets:       []string{"50", "200"},
 		Datastore: DatastoreConfig{
-			Engine:          "memory",
-			MaxCacheSize:    DefaultMaxAuthorizationModelCacheSize,
-			MaxIdleConns:    10,
-			MaxOpenConns:    30,
-			ConnMaxLifetime: 30 * time.Minute,
-			ConnMaxIdleTime: 30 * time.Minute,
-			ReadOnly:        false,
+			Engine:             "memory",
+			MaxCacheSize:       DefaultMaxAuthorizationModelCacheSize,
+			MaxIdleConns:       10,
+			MaxOpenConns:       30,
+			ConnMaxLifetime:    30 * time.Minute,
+			ConnMaxIdleTime:    30 * time.Minute,
+			ReadOnly:           false,
+			PreparedStmtsCache: false,
 		},
 		GRPC: GRPCConfig{
 			Addr: "0.0.0.0:8081",

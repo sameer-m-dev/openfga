@@ -119,7 +119,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query goose_db_version: %w", err)
 	}
-	cfg.Logger.Info("", zap.Int64("goose_db_version", revision))
+	cfg.Logger.Info("query goose_db_version", zap.Int64("goose_db_version", revision))
 
 	policy := backoff.NewExponentialBackOff()
 	policy.MaxElapsedTime = 1 * time.Minute
@@ -144,7 +144,16 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 			return nil, fmt.Errorf("initialize metrics: %w", err)
 		}
 	}
-	stbl := sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(db)
+
+	var stbl sq.StatementBuilderType
+	if cfg.PreparedStmtsCache {
+		// StmtCache caches Prepared Stmts for you
+		dbCache := sq.NewStmtCache(db)
+		stbl = sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(dbCache)
+	} else {
+		stbl = sq.StatementBuilder.PlaceholderFormat(sq.Dollar).RunWith(db)
+	}
+
 	dbInfo := sqlcommon.NewDBInfo(db, stbl, sq.Expr("NOW()"))
 
 	return &Postgres{
@@ -227,6 +236,14 @@ func (p *Postgres) read(ctx context.Context, store string, tupleKey *openfgav1.T
 		sb = sb.Limit(uint64(opts.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
 	}
 
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.read", zap.String("query", sqlStr), zap.Any("args", args))
+
+	// execute the query
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
 		return nil, sqlcommon.HandleSQLError(err)
@@ -338,6 +355,14 @@ func (p *Postgres) ReadUsersetTuples(ctx context.Context, store string, filter s
 		}
 		sb = sb.Where(orConditions)
 	}
+
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.ReadUsersetTuples", zap.String("query", sqlStr), zap.Any("args", args))
+
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
 		return nil, sqlcommon.HandleSQLError(err)
@@ -360,7 +385,7 @@ func (p *Postgres) ReadStartingWithUser(ctx context.Context, store string, opts 
 		targetUsersArg = append(targetUsersArg, targetUser)
 	}
 
-	rows, err := p.stbl.
+	sb := p.stbl.
 		Select(
 			"store", "object_type", "object_id", "relation", "_user",
 			"condition_name", "condition_context", "ulid", "inserted_at",
@@ -371,7 +396,17 @@ func (p *Postgres) ReadStartingWithUser(ctx context.Context, store string, opts 
 			"object_type": opts.ObjectType,
 			"relation":    opts.Relation,
 			"_user":       targetUsersArg,
-		}).QueryContext(ctx)
+		})
+
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.ReadStartingWithUser", zap.String("query", sqlStr), zap.Any("args", args))
+
+	rows, err := sb.QueryContext(ctx)
+
 	if err != nil {
 		return nil, sqlcommon.HandleSQLError(err)
 	}
@@ -414,6 +449,13 @@ func (p *Postgres) ReadAuthorizationModels(ctx context.Context, store string, op
 	if opts.PageSize > 0 {
 		sb = sb.Limit(uint64(opts.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
 	}
+
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.ReadAuthorizationModels", zap.String("query", sqlStr), zap.Any("args", args))
 
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
@@ -569,6 +611,13 @@ func (p *Postgres) ListStores(ctx context.Context, opts storage.PaginationOption
 		sb = sb.Limit(uint64(opts.PageSize + 1)) // + 1 is used to determine whether to return a continuation token.
 	}
 
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.ListStores", zap.String("query", sqlStr), zap.Any("args", args))
+
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
 		return nil, nil, sqlcommon.HandleSQLError(err)
@@ -716,6 +765,13 @@ func (p *Postgres) ReadChanges(
 	if opts.PageSize > 0 {
 		sb = sb.Limit(uint64(opts.PageSize)) // + 1 is NOT used here as we always return a continuation token.
 	}
+
+	// log the query
+	sqlStr, args, err := sb.ToSql()
+	if err != nil {
+		return nil, nil, sqlcommon.HandleSQLError(err)
+	}
+	p.logger.Info("postgres.ReadChanges", zap.String("query", sqlStr), zap.Any("args", args))
 
 	rows, err := sb.QueryContext(ctx)
 	if err != nil {
