@@ -19,7 +19,7 @@ const (
 	DefaultChangelogHorizonOffset           = 0
 	DefaultResolveNodeLimit                 = 25
 	DefaultResolveNodeBreadthLimit          = 100
-	DefaultListObjectsDeadline              = 3 * time.Second
+	DefaultListObjectsDeadline              = 30 * time.Second
 	DefaultListObjectsMaxResults            = 1000
 	DefaultMaxConcurrentReadsForCheck       = math.MaxUint32
 	DefaultMaxConcurrentReadsForListObjects = math.MaxUint32
@@ -38,9 +38,9 @@ const (
 	DefaultDispatchThrottlingDefaultThreshold = 100
 	DefaultDispatchThrottlingMaxThreshold     = 0 // 0 means use the default threshold as max
 
-	DefaultRequestTimeout = 3 * time.Second
+	DefaultRequestTimeout = 30 * time.Second
 
-	additionalUpstreamTimeout = 3 * time.Second
+	additionalUpstreamTimeout = 30 * time.Second
 )
 
 type DatastoreMetricsConfig struct {
