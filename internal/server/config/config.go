@@ -401,11 +401,13 @@ func DefaultConfig() *Config {
 		RequestDurationDatastoreQueryCountBuckets: []string{"50", "200"},
 		RequestDurationDispatchCountBuckets:       []string{"50", "200"},
 		Datastore: DatastoreConfig{
-			Engine:       "memory",
-			MaxCacheSize: DefaultMaxAuthorizationModelCacheSize,
-			MaxIdleConns: 10,
-			MaxOpenConns: 30,
-			ReadOnly:     false,
+			Engine:          "memory",
+			MaxCacheSize:    DefaultMaxAuthorizationModelCacheSize,
+			MaxIdleConns:    10,
+			MaxOpenConns:    30,
+			ConnMaxLifetime: 30 * time.Minute,
+			ConnMaxIdleTime: 30 * time.Minute,
+			ReadOnly:        false,
 		},
 		GRPC: GRPCConfig{
 			Addr: "0.0.0.0:8081",

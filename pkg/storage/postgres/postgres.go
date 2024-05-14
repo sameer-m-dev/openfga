@@ -98,7 +98,7 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 
 	// Check if the instance is read-only and set the appropriate session variables.
 	if cfg.ReadOnly {
-		cfg.Logger.Info("setting read-only session variables\n")
+		cfg.Logger.Info("setting read-only session variables")
 		op, err := db.Exec("SET yb_read_from_followers = on;")
 		if err != nil {
 			return nil, fmt.Errorf("setting yb_read_from_followers: %w", err)
@@ -111,6 +111,14 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 		}
 		cfg.Logger.Info("set default_transaction_read_only: ", zap.Any("result", op))
 	}
+
+	// Running a dummy query to check if the connection is established.
+	// This is done to avoid transient errors during startup.
+	op, err := db.Exec("SELECT * FROM goose_db_version;")
+	if err != nil {
+		return nil, fmt.Errorf("query goose_db_version: %w", err)
+	}
+	cfg.Logger.Info("SELECT * FROM goose_db_version: ", zap.Any("result", op))
 
 	policy := backoff.NewExponentialBackOff()
 	policy.MaxElapsedTime = 1 * time.Minute
