@@ -14,6 +14,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver.
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"go.opentelemetry.io/otel"
@@ -114,11 +115,11 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 
 	// Running a dummy query to check if the connection is established.
 	// This is done to avoid transient errors during startup.
-	op, err := db.Exec("SELECT * FROM goose_db_version;")
+	revision, err := goose.GetDBVersion(db)
 	if err != nil {
 		return nil, fmt.Errorf("query goose_db_version: %w", err)
 	}
-	cfg.Logger.Info("SELECT * FROM goose_db_version: ", zap.Any("result", op))
+	cfg.Logger.Info("", zap.Int64("goose_db_version", revision))
 
 	policy := backoff.NewExponentialBackOff()
 	policy.MaxElapsedTime = 1 * time.Minute
