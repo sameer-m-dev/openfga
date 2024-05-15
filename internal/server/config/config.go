@@ -59,6 +59,9 @@ type DatastoreConfig struct {
 	// MaxCacheSize is the maximum number of authorization models that will be cached in memory.
 	MaxCacheSize int
 
+	// MinOpenConns is the minimum number of open connections to the database.
+	MinOpenConns int
+
 	// MaxOpenConns is the maximum number of open connections to the database.
 	MaxOpenConns int
 
@@ -407,6 +410,7 @@ func DefaultConfig() *Config {
 			Engine:            "memory",
 			MaxCacheSize:      DefaultMaxAuthorizationModelCacheSize,
 			MaxIdleConns:      10,
+			MinOpenConns:      5,
 			MaxOpenConns:      30,
 			ConnMaxLifetime:   30 * time.Minute,
 			ConnMaxIdleTime:   30 * time.Minute,

@@ -32,6 +32,7 @@ type Config struct {
 	MaxTuplesPerWriteField int
 	MaxTypesPerModelField  int
 
+	MinOpenConns      int
 	MaxOpenConns      int
 	MaxIdleConns      int
 	ConnMaxIdleTime   time.Duration
@@ -80,6 +81,14 @@ func WithMaxTuplesPerWrite(maxTuples int) DatastoreOption {
 func WithMaxTypesPerAuthorizationModel(maxTypes int) DatastoreOption {
 	return func(cfg *Config) {
 		cfg.MaxTypesPerModelField = maxTypes
+	}
+}
+
+// WithMinOpenConns returns a DatastoreOption that sets the
+// maximum number of open connections in the Config.
+func WithMinOpenConns(c int) DatastoreOption {
+	return func(cfg *Config) {
+		cfg.MinOpenConns = c
 	}
 }
 

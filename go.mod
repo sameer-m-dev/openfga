@@ -37,6 +37,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/mysql v0.30.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.30.0
 	github.com/tidwall/gjson v1.17.1
+	github.com/yugabyte/pgx/v5 v5.5.3-yb-2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.50.0
 	go.opentelemetry.io/otel v1.25.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.25.0

@@ -84,6 +84,9 @@ func bindRunFlagsFunc(flags *pflag.FlagSet) func(*cobra.Command, []string) {
 		util.MustBindPFlag("datastore.maxCacheSize", flags.Lookup("datastore-max-cache-size"))
 		util.MustBindEnv("datastore.maxCacheSize", "OPENFGA_DATASTORE_MAX_CACHE_SIZE", "OPENFGA_DATASTORE_MAXCACHESIZE")
 
+		util.MustBindPFlag("datastore.minOpenConns", flags.Lookup("datastore-min-open-conns"))
+		util.MustBindEnv("datastore.minOpenConns", "OPENFGA_DATASTORE_MIN_OPEN_CONNS", "OPENFGA_DATASTORE_MINOPENCONNS")
+
 		util.MustBindPFlag("datastore.maxOpenConns", flags.Lookup("datastore-max-open-conns"))
 		util.MustBindEnv("datastore.maxOpenConns", "OPENFGA_DATASTORE_MAX_OPEN_CONNS", "OPENFGA_DATASTORE_MAXOPENCONNS")
 
