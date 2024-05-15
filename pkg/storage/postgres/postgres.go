@@ -343,9 +343,13 @@ func (p *Postgres) ReadUsersetTuples(ctx context.Context, store string, filter s
 	if filter.Relation != "" {
 		sb = sb.Where(sq.Eq{"relation": filter.Relation})
 	}
+
+	// TODO: Remove
+	p.logger.Info("ReadUsersetTuples", zap.Any("AllowedUserTypeRestrictions", filter.AllowedUserTypeRestrictions))
 	if len(filter.AllowedUserTypeRestrictions) > 0 {
 		orConditions := sq.Or{}
 		for _, userset := range filter.AllowedUserTypeRestrictions {
+			p.logger.Info("ReadUsersetTuples", zap.Any("userset", userset))
 			if _, ok := userset.GetRelationOrWildcard().(*openfgav1.RelationReference_Relation); ok {
 				orConditions = append(orConditions, sq.Like{"_user": userset.GetType() + ":%#" + userset.GetRelation()})
 			}
@@ -353,6 +357,7 @@ func (p *Postgres) ReadUsersetTuples(ctx context.Context, store string, filter s
 				orConditions = append(orConditions, sq.Eq{"_user": userset.GetType() + ":*"})
 			}
 		}
+		p.logger.Info("ReadUsersetTuples", zap.Any("orConditions", orConditions))
 		sb = sb.Where(orConditions)
 	}
 
