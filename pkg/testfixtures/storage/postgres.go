@@ -9,12 +9,12 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/docker/docker/api/types/container"
-	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver.
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	testcontainerspostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	_ "github.com/yugabyte/pgx/v5/stdlib" // PostgreSQL driver.
 
 	"github.com/openfga/openfga/assets"
 )

@@ -15,9 +15,8 @@ import (
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/collectors"
-	ybpgx "github.com/yugabyte/pgx/v5"             // YugabyteDB driver.
-	ybpgxpool "github.com/yugabyte/pgx/v5/pgxpool" // YugabyteDB Pool driver.
+	"github.com/prometheus/client_golang/prometheus/collectors" // YugabyteDB driver.
+	ybpgxpool "github.com/yugabyte/pgx/v5/pgxpool"              // YugabyteDB Pool driver.
 	"github.com/yugabyte/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
@@ -82,25 +81,33 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing yugabyte config: %w", err)
 	}
-
-	// Check if the instance is read-only and set the appropriate session variables.
 	if cfg.ReadOnly {
-		config.AfterConnect = func(ctx context.Context, conn *ybpgx.Conn) error {
-			cfg.Logger.Info("setting read-only session variables")
-			op, err := conn.Exec(ctx, "SET yb_read_from_followers = on;")
-			if err != nil {
-				return fmt.Errorf("setting yb_read_from_followers: %w", err)
-			}
-			cfg.Logger.Info("set yb_read_from_followers: ", zap.Any("result", op))
-
-			op, err = conn.Exec(ctx, "SET default_transaction_read_only = on;")
-			if err != nil {
-				return fmt.Errorf("setting default_transaction_read_only: %w", err)
-			}
-			cfg.Logger.Info("set default_transaction_read_only: ", zap.Any("result", op))
-			return nil
+		cfg.Logger.Info("setting read-only session variables")
+		config.ConnConfig.RuntimeParams = map[string]string{
+			"application_name":              "openfga",
+			"yb_read_from_followers":        "on",
+			"default_transaction_read_only": "on",
 		}
 	}
+
+	// TODO: REMOVE IF RuntimeParams WORKS
+	// if cfg.ReadOnly {
+	// 	config.AfterConnect = func(ctx context.Context, conn *ybpgx.Conn) error {
+	// 		cfg.Logger.Info("setting read-only session variables")
+	// 		op, err := conn.Exec(ctx, "SET yb_read_from_followers = on;")
+	// 		if err != nil {
+	// 			return fmt.Errorf("setting yb_read_from_followers: %w", err)
+	// 		}
+	// 		cfg.Logger.Info("set yb_read_from_followers: ", zap.Any("result", op))
+
+	// 		op, err = conn.Exec(ctx, "SET default_transaction_read_only = on;")
+	// 		if err != nil {
+	// 			return fmt.Errorf("setting default_transaction_read_only: %w", err)
+	// 		}
+	// 		cfg.Logger.Info("set default_transaction_read_only: ", zap.Any("result", op))
+	// 		return nil
+	// 	}
+	// }
 
 	if cfg.MinOpenConns != 0 {
 		config.MinConns = int32(cfg.MinOpenConns)

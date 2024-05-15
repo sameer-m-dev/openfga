@@ -10,10 +10,10 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/go-sql-driver/mysql"
-	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver.
 	"github.com/pressly/goose/v3"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	_ "github.com/yugabyte/pgx/v5/stdlib" // PostgreSQL driver.
 
 	"github.com/openfga/openfga/assets"
 )
