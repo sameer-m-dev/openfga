@@ -16,7 +16,8 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors" // YugabyteDB driver.
-	ybpgxpool "github.com/yugabyte/pgx/v5/pgxpool"              // YugabyteDB Pool driver.
+	ybpgx "github.com/yugabyte/pgx/v5"                          // YugabyteDB Pool driver.
+	ybpgxpool "github.com/yugabyte/pgx/v5/pgxpool"              // YugabyteDB driver.
 	"github.com/yugabyte/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
@@ -87,6 +88,14 @@ func New(uri string, cfg *sqlcommon.Config) (*Postgres, error) {
 			"application_name":              "openfga",
 			"yb_read_from_followers":        "on",
 			"default_transaction_read_only": "on",
+		}
+		config.AfterConnect = func(ctx context.Context, conn *ybpgx.Conn) error {
+			op, err := conn.Exec(ctx, "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;")
+			if err != nil {
+				return fmt.Errorf("setting SESSION CHARACTERISTICS: %w", err)
+			}
+			cfg.Logger.Info("setting SESSION CHARACTERISTICS: ", zap.Any("result", op))
+			return nil
 		}
 	}
 
