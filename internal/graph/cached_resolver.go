@@ -143,6 +143,11 @@ func (c *CachedCheckResolver) ResolveCheck(
 	checkCacheTotalCounter.Inc()
 
 	cacheKey, err := CheckRequestCacheKey(req)
+	c.logger.Info("ResolveCheck", zap.Any("ResolveCheckRequest", req), zap.String("cacheKey", cacheKey))
+	c.logger.Info("ResolveCheckCacheStats",
+		zap.Int64("ItemCount", c.cache.GetSize()),
+		zap.Int("ItemCount", c.cache.ItemCount()),
+	)
 	if err != nil {
 		c.logger.Error("cache key computation failed with error", zap.Error(err))
 		telemetry.TraceError(span, err)
@@ -150,6 +155,7 @@ func (c *CachedCheckResolver) ResolveCheck(
 	}
 
 	cachedResp := c.cache.Get(cacheKey)
+	c.logger.Info("ResolveCheck", zap.String("cachedResp", cacheKey))
 	isCached := cachedResp != nil && !cachedResp.Expired()
 	span.SetAttributes(attribute.Bool("is_cached", isCached))
 	if isCached {
@@ -160,6 +166,7 @@ func (c *CachedCheckResolver) ResolveCheck(
 	}
 
 	resp, err := c.delegate.ResolveCheck(ctx, req)
+	c.logger.Info("ResolveCheck", zap.String("delegateResp", cacheKey))
 	if err != nil {
 		telemetry.TraceError(span, err)
 		return nil, err
