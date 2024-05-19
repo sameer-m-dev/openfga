@@ -19,14 +19,14 @@ const (
 	DefaultChangelogHorizonOffset           = 0
 	DefaultResolveNodeLimit                 = 25
 	DefaultResolveNodeBreadthLimit          = 100
-	DefaultListObjectsDeadline              = 30 * time.Second
+	DefaultListObjectsDeadline              = 60 * time.Second
 	DefaultListObjectsMaxResults            = 1000
 	DefaultMaxConcurrentReadsForCheck       = math.MaxUint32
 	DefaultMaxConcurrentReadsForListObjects = math.MaxUint32
 
 	DefaultWriteContextByteLimit = 32 * 1_024 // 32KB
 	DefaultCheckQueryCacheLimit  = 10000
-	DefaultCheckQueryCacheTTL    = 10 * time.Second
+	DefaultCheckQueryCacheTTL    = 60 * time.Second
 	DefaultCheckQueryCacheEnable = false
 
 	// Care should be taken here - decreasing can cause API compatibility problems with Conditions.
@@ -38,9 +38,9 @@ const (
 	DefaultDispatchThrottlingDefaultThreshold = 100
 	DefaultDispatchThrottlingMaxThreshold     = 0 // 0 means use the default threshold as max
 
-	DefaultRequestTimeout = 30 * time.Second
+	DefaultRequestTimeout = 60 * time.Second
 
-	additionalUpstreamTimeout = 30 * time.Second
+	additionalUpstreamTimeout = 60 * time.Second
 )
 
 type DatastoreMetricsConfig struct {
@@ -409,9 +409,9 @@ func DefaultConfig() *Config {
 		Datastore: DatastoreConfig{
 			Engine:            "memory",
 			MaxCacheSize:      DefaultMaxAuthorizationModelCacheSize,
-			MaxIdleConns:      10,
-			MinOpenConns:      5,
-			MaxOpenConns:      30,
+			MaxIdleConns:      1,
+			MinOpenConns:      1,
+			MaxOpenConns:      1,
 			ConnMaxLifetime:   30 * time.Minute,
 			ConnMaxIdleTime:   30 * time.Minute,
 			ReadOnly:          false,
