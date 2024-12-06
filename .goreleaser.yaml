@@ -1,3 +1,5 @@
+version: 2
+
 project_name: openfga
 
 before:
@@ -5,14 +7,13 @@ before:
     - make generate-mocks
 
 builds:
-  -
-    main: ./cmd/openfga
+  - main: ./cmd/openfga
     binary: openfga
     env:
       - CGO_ENABLED=0
     goos:
       - linux
-    goarch: 
+    goarch:
       - amd64
     ldflags:
       - "-s -w"
@@ -69,7 +70,7 @@ archives:
       - assets
 
 checksum:
-  name_template: 'checksums.txt'
+  name_template: "checksums.txt"
 
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
@@ -78,5 +79,5 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - '^docs:'
-      - '^test:'
+      - "^docs:"
+      - "^test:"

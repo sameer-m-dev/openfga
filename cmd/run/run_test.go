@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,33 +24,36 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-retryablehttp"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	parser "github.com/openfga/language/pkg/go/transformer"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"go.uber.org/goleak"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/protobuf/encoding/protojson"
 
-	"github.com/openfga/openfga/pkg/middleware/requestid"
-	"github.com/openfga/openfga/pkg/middleware/storeid"
-	"github.com/openfga/openfga/pkg/server"
-	"github.com/openfga/openfga/pkg/testutils"
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	parser "github.com/openfga/language/pkg/go/transformer"
 
 	"github.com/openfga/openfga/cmd"
 	"github.com/openfga/openfga/cmd/util"
 	"github.com/openfga/openfga/internal/mocks"
 	serverconfig "github.com/openfga/openfga/internal/server/config"
+	"github.com/openfga/openfga/pkg/encoder"
 	"github.com/openfga/openfga/pkg/logger"
+	"github.com/openfga/openfga/pkg/middleware/requestid"
+	"github.com/openfga/openfga/pkg/middleware/storeid"
+	"github.com/openfga/openfga/pkg/server"
 	serverErrors "github.com/openfga/openfga/pkg/server/errors"
+	"github.com/openfga/openfga/pkg/storage/sqlcommon"
+	"github.com/openfga/openfga/pkg/storage/sqlite"
 	storagefixtures "github.com/openfga/openfga/pkg/testfixtures/storage"
+	"github.com/openfga/openfga/pkg/testutils"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
-
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 func TestMain(m *testing.M) {
@@ -309,6 +313,7 @@ func TestBuildServiceWithTracingEnabled(t *testing.T) {
 
 	// attempt a random request
 	client := retryablehttp.NewClient()
+	t.Cleanup(client.HTTPClient.CloseIdleConnections)
 	response, err := client.Get(fmt.Sprintf("http://%s/healthz", cfg.HTTP.Addr))
 	require.NoError(t, err)
 
@@ -413,8 +418,8 @@ func tryGetStores(t *testing.T, test authTest, httpAddr string, retryClient *ret
 
 	res, err := retryClient.Do(req)
 	require.NoError(t, err, "Failed to execute request")
-	require.Equal(t, test.expectedStatusCode, res.StatusCode)
 	defer res.Body.Close()
+	require.Equal(t, test.expectedStatusCode, res.StatusCode)
 	body, err := io.ReadAll(res.Body)
 	require.NoError(t, err, "Failed to read response")
 
@@ -429,6 +434,9 @@ func tryGetStores(t *testing.T, test authTest, httpAddr string, retryClient *ret
 }
 
 func TestHTTPServerWithCORS(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
 	cfg := testutils.MustDefaultConfigWithRandomPorts()
 	cfg.Authn.Method = "preshared"
 	cfg.Authn.AuthnPresharedKeyConfig = &serverconfig.AuthnPresharedKeyConfig{
@@ -462,18 +470,19 @@ func TestHTTPServerWithCORS(t *testing.T) {
 		want want
 	}{
 		{
-			name: "Good_Origin",
+			name: "origin_allowed",
 			args: args{
 				origin: "http://localhost",
-				header: "Authorization, X-Custom-Header",
+				// must be lowercase, see https://github.com/rs/cors/issues/174#issuecomment-2082098921
+				header: "authorization,x-custom-header",
 			},
 			want: want{
 				origin: "http://localhost",
-				header: "Authorization, X-Custom-Header",
+				header: "authorization,x-custom-header",
 			},
 		},
 		{
-			name: "Bad_Origin",
+			name: "origin_forbidden",
 			args: args{
 				origin: "http://openfga.example",
 				header: "X-Custom-Header",
@@ -484,7 +493,7 @@ func TestHTTPServerWithCORS(t *testing.T) {
 			},
 		},
 		{
-			name: "Bad_Header",
+			name: "origin_allowed_but_header_forbidden",
 			args: args{
 				origin: "http://localhost",
 				header: "Bad-Custom-Header",
@@ -497,6 +506,7 @@ func TestHTTPServerWithCORS(t *testing.T) {
 	}
 
 	client := retryablehttp.NewClient()
+	t.Cleanup(client.HTTPClient.CloseIdleConnections)
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -525,6 +535,9 @@ func TestHTTPServerWithCORS(t *testing.T) {
 }
 
 func TestBuildServerWithOIDCAuthentication(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
 	oidcServerPort, oidcServerPortReleaser := testutils.TCPRandomPort()
 	localOIDCServerURL := fmt.Sprintf("http://localhost:%d", oidcServerPort)
 
@@ -560,8 +573,8 @@ func TestBuildServerWithOIDCAuthentication(t *testing.T) {
 			_name:      "Header_with_invalid_token_fails",
 			authHeader: "Bearer incorrecttoken",
 			expectedErrorResponse: &serverErrors.ErrorResponse{
-				Code:    "auth_failed_invalid_bearer_token",
-				Message: "invalid bearer token",
+				Code:    "invalid_claims",
+				Message: "invalid claims",
 			},
 			expectedStatusCode: 401,
 		},
@@ -582,6 +595,8 @@ func TestBuildServerWithOIDCAuthentication(t *testing.T) {
 	}
 
 	retryClient := retryablehttp.NewClient()
+	t.Cleanup(retryClient.HTTPClient.CloseIdleConnections)
+
 	for _, test := range tests {
 		t.Run(test._name, func(t *testing.T) {
 			tryGetStores(t, test, cfg.HTTP.Addr, retryClient)
@@ -594,6 +609,9 @@ func TestBuildServerWithOIDCAuthentication(t *testing.T) {
 }
 
 func TestBuildServerWithOIDCAuthenticationAlias(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
 	oidcServerPort1, oidcServerPortReleaser1 := testutils.TCPRandomPort()
 	oidcServerPort2, oidcServerPortReleaser2 := testutils.TCPRandomPort()
 	oidcServerURL1 := fmt.Sprintf("http://localhost:%d", oidcServerPort1)
@@ -632,6 +650,8 @@ func TestBuildServerWithOIDCAuthenticationAlias(t *testing.T) {
 	testutils.EnsureServiceHealthy(t, cfg.GRPC.Addr, cfg.HTTP.Addr, nil)
 
 	retryClient := retryablehttp.NewClient()
+	t.Cleanup(retryClient.HTTPClient.CloseIdleConnections)
+
 	test := authTest{
 		_name:              "Token_with_issuer_equal_to_alias_is_accepted",
 		authHeader:         "Bearer " + trustedTokenFromAlias,
@@ -697,6 +717,7 @@ func TestHTTPServingTLS(t *testing.T) {
 		certPool := x509.NewCertPool()
 		certPool.AddCert(certsAndKeys.caCert)
 		client := retryablehttp.NewClient()
+		t.Cleanup(client.HTTPClient.CloseIdleConnections)
 		client.HTTPClient.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{
 				RootCAs: certPool,
@@ -706,7 +727,6 @@ func TestHTTPServingTLS(t *testing.T) {
 		resp, err := client.Get(fmt.Sprintf("https://%s/healthz", cfg.HTTP.Addr))
 		require.NoError(t, err)
 		resp.Body.Close()
-		client.HTTPClient.CloseIdleConnections()
 	})
 }
 
@@ -778,9 +798,15 @@ func TestServerMetricsReporting(t *testing.T) {
 	t.Run("postgres", func(t *testing.T) {
 		testServerMetricsReporting(t, "postgres")
 	})
+	t.Run("sqlite", func(t *testing.T) {
+		testServerMetricsReporting(t, "sqlite")
+	})
 }
 
 func testServerMetricsReporting(t *testing.T, engine string) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
 	testDatastore := storagefixtures.RunDatastoreTestContainer(t, engine)
 
 	cfg := testutils.MustDefaultConfigWithRandomPorts()
@@ -792,7 +818,7 @@ func testServerMetricsReporting(t *testing.T, engine string) {
 	metricsPort, metricsPortReleaser := testutils.TCPRandomPort()
 	metricsPortReleaser()
 
-	cfg.Metrics.Addr = fmt.Sprintf("0.0.0.0:%d", metricsPort)
+	cfg.Metrics.Addr = fmt.Sprintf("localhost:%d", metricsPort)
 
 	cfg.MaxConcurrentReadsForCheck = 30
 	cfg.MaxConcurrentReadsForListObjects = 30
@@ -1062,6 +1088,14 @@ func TestDefaultConfig(t *testing.T) {
 	require.True(t, val.Exists())
 	require.EqualValues(t, val.Int(), cfg.MaxConcurrentReadsForCheck)
 
+	val = res.Get("properties.maxConditionEvaluationCost.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Uint(), cfg.MaxConditionEvaluationCost)
+
+	val = res.Get("properties.maxConcurrentReadsForListUsers.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.MaxConcurrentReadsForListUsers)
+
 	val = res.Get("properties.changelogHorizonOffset.default")
 	require.True(t, val.Exists())
 	require.EqualValues(t, val.Int(), cfg.ChangelogHorizonOffset)
@@ -1089,6 +1123,14 @@ func TestDefaultConfig(t *testing.T) {
 	val = res.Get("properties.listObjectsMaxResults.default")
 	require.True(t, val.Exists())
 	require.EqualValues(t, val.Int(), cfg.ListObjectsMaxResults)
+
+	val = res.Get("properties.listUsersDeadline.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.String(), cfg.ListUsersDeadline.String())
+
+	val = res.Get("properties.listUsersMaxResults.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.ListUsersMaxResults)
 
 	val = res.Get("properties.experimentals.default")
 	require.True(t, val.Exists())
@@ -1118,17 +1160,29 @@ func TestDefaultConfig(t *testing.T) {
 	require.True(t, val.Exists())
 	require.Equal(t, val.Bool(), cfg.Trace.OTLP.TLS.Enabled)
 
+	val = res.Get("properties.checkCache.properties.limit.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.CheckCache.Limit)
+
 	val = res.Get("properties.checkQueryCache.properties.enabled.default")
 	require.True(t, val.Exists())
 	require.Equal(t, val.Bool(), cfg.CheckQueryCache.Enabled)
 
-	val = res.Get("properties.checkQueryCache.properties.limit.default")
-	require.True(t, val.Exists())
-	require.EqualValues(t, val.Int(), cfg.CheckQueryCache.Limit)
-
 	val = res.Get("properties.checkQueryCache.properties.ttl.default")
 	require.True(t, val.Exists())
 	require.Equal(t, val.String(), cfg.CheckQueryCache.TTL.String())
+
+	val = res.Get("properties.checkIteratorCache.properties.enabled.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.Bool(), cfg.CheckIteratorCache.Enabled)
+
+	val = res.Get("properties.checkIteratorCache.properties.maxResults.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.CheckIteratorCache.MaxResults)
+
+	val = res.Get("properties.checkIteratorCache.properties.ttl.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.String(), cfg.CheckIteratorCache.TTL.String())
 
 	val = res.Get("properties.requestDurationDatastoreQueryCountBuckets.default")
 	require.True(t, val.Exists())
@@ -1144,21 +1198,57 @@ func TestDefaultConfig(t *testing.T) {
 		require.Equal(t, arrayVal.String(), cfg.RequestDurationDispatchCountBuckets[index])
 	}
 
-	val = res.Get("properties.dispatchThrottling.properties.enabled.default")
+	val = res.Get("properties.contextPropagationToDatastore.default")
 	require.True(t, val.Exists())
-	require.Equal(t, val.Bool(), cfg.DispatchThrottling.Enabled)
+	require.False(t, val.Bool())
 
-	val = res.Get("properties.dispatchThrottling.properties.frequency.default")
+	val = res.Get("properties.checkDispatchThrottling.properties.enabled.default")
 	require.True(t, val.Exists())
-	require.Equal(t, val.String(), cfg.DispatchThrottling.Frequency.String())
+	require.Equal(t, val.Bool(), cfg.CheckDispatchThrottling.Enabled)
 
-	val = res.Get("properties.dispatchThrottling.properties.threshold.default")
+	val = res.Get("properties.checkDispatchThrottling.properties.frequency.default")
 	require.True(t, val.Exists())
-	require.EqualValues(t, val.Int(), cfg.DispatchThrottling.Threshold)
+	require.Equal(t, val.String(), cfg.CheckDispatchThrottling.Frequency.String())
 
-	val = res.Get("properties.dispatchThrottling.properties.maxThreshold.default")
+	val = res.Get("properties.checkDispatchThrottling.properties.threshold.default")
 	require.True(t, val.Exists())
-	require.EqualValues(t, val.Int(), cfg.DispatchThrottling.MaxThreshold)
+	require.EqualValues(t, val.Int(), cfg.CheckDispatchThrottling.Threshold)
+
+	val = res.Get("properties.checkDispatchThrottling.properties.maxThreshold.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.CheckDispatchThrottling.MaxThreshold)
+
+	val = res.Get("properties.listObjectsDispatchThrottling.properties.enabled.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.Bool(), cfg.ListObjectsDispatchThrottling.Enabled)
+
+	val = res.Get("properties.listObjectsDispatchThrottling.properties.frequency.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.String(), cfg.ListObjectsDispatchThrottling.Frequency.String())
+
+	val = res.Get("properties.listObjectsDispatchThrottling.properties.threshold.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.ListObjectsDispatchThrottling.Threshold)
+
+	val = res.Get("properties.listObjectsDispatchThrottling.properties.maxThreshold.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.ListObjectsDispatchThrottling.MaxThreshold)
+
+	val = res.Get("properties.listUsersDispatchThrottling.properties.enabled.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.Bool(), cfg.ListUsersDispatchThrottling.Enabled)
+
+	val = res.Get("properties.listUsersDispatchThrottling.properties.frequency.default")
+	require.True(t, val.Exists())
+	require.Equal(t, val.String(), cfg.ListUsersDispatchThrottling.Frequency.String())
+
+	val = res.Get("properties.listUsersDispatchThrottling.properties.threshold.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.ListUsersDispatchThrottling.Threshold)
+
+	val = res.Get("properties.listUsersDispatchThrottling.properties.maxThreshold.default")
+	require.True(t, val.Exists())
+	require.EqualValues(t, val.Int(), cfg.ListUsersDispatchThrottling.MaxThreshold)
 
 	val = res.Get("properties.requestTimeout.default")
 	require.True(t, val.Exists())
@@ -1172,6 +1262,7 @@ func TestRunCommandNoConfigDefaultValues(t *testing.T) {
 		require.Equal(t, "", viper.GetString(datastoreEngineFlag))
 		require.Equal(t, "", viper.GetString(datastoreURIFlag))
 		require.False(t, viper.GetBool("check-query-cache-enabled"))
+		require.False(t, viper.GetBool("context-propagation-to-datastore"))
 		require.Equal(t, uint32(0), viper.GetUint32("check-query-cache-limit"))
 		require.Equal(t, 0*time.Second, viper.GetDuration("check-query-cache-ttl"))
 		require.Equal(t, []int{}, viper.GetIntSlice("request-duration-datastore-query-count-buckets"))
@@ -1207,7 +1298,6 @@ func TestRunCommandConfigFileValuesAreParsed(t *testing.T) {
 func TestParseConfig(t *testing.T) {
 	config := `checkQueryCache:
     enabled: true
-    limit: 100
     TTL: 5s
 requestDurationDatastoreQueryCountBuckets: [33,44]
 requestDurationDispatchCountBuckets: [32,42]
@@ -1226,7 +1316,6 @@ requestDurationDispatchCountBuckets: [32,42]
 	cfg, err := ReadConfig()
 	require.NoError(t, err)
 	require.True(t, cfg.CheckQueryCache.Enabled)
-	require.Equal(t, uint32(100), cfg.CheckQueryCache.Limit)
 	require.Equal(t, 5*time.Second, cfg.CheckQueryCache.TTL)
 	require.Equal(t, []string{"33", "44"}, cfg.RequestDurationDatastoreQueryCountBuckets)
 	require.Equal(t, []string{"32", "42"}, cfg.RequestDurationDispatchCountBuckets)
@@ -1241,13 +1330,18 @@ func TestRunCommandConfigIsMerged(t *testing.T) {
 	t.Setenv("OPENFGA_DATASTORE_URI", "postgres://postgres:PASS2@127.0.0.1:5432/postgres")
 	t.Setenv("OPENFGA_MAX_TYPES_PER_AUTHORIZATION_MODEL", "1")
 	t.Setenv("OPENFGA_CHECK_QUERY_CACHE_ENABLED", "true")
-	t.Setenv("OPENFGA_CHECK_QUERY_CACHE_LIMIT", "33")
+	t.Setenv("OPENFGA_CHECK_CACHE_LIMIT", "33")
 	t.Setenv("OPENFGA_CHECK_QUERY_CACHE_TTL", "5s")
 	t.Setenv("OPENFGA_REQUEST_DURATION_DATASTORE_QUERY_COUNT_BUCKETS", "33 44")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_ENABLED", "true")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_FREQUENCY", "1ms")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_THRESHOLD", "120")
 	t.Setenv("OPENFGA_DISPATCH_THROTTLING_MAX_THRESHOLD", "130")
+	t.Setenv("OPENFGA_MAX_CONDITION_EVALUATION_COST", "120")
+	t.Setenv("OPENFGA_ACCESS_CONTROL_ENABLED", "true")
+	t.Setenv("OPENFGA_ACCESS_CONTROL_STORE_ID", "12345")
+	t.Setenv("OPENFGA_ACCESS_CONTROL_MODEL_ID", "67891")
+	t.Setenv("OPENFGA_CONTEXT_PROPAGATION_TO_DATASTORE", "true")
 
 	runCmd := NewRunCommand()
 	runCmd.RunE = func(cmd *cobra.Command, _ []string) error {
@@ -1255,7 +1349,7 @@ func TestRunCommandConfigIsMerged(t *testing.T) {
 		require.Equal(t, "postgres://postgres:PASS2@127.0.0.1:5432/postgres", viper.GetString(datastoreURIFlag))
 		require.Equal(t, "1", viper.GetString("max-types-per-authorization-model"))
 		require.True(t, viper.GetBool("check-query-cache-enabled"))
-		require.Equal(t, uint32(33), viper.GetUint32("check-query-cache-limit"))
+		require.Equal(t, uint32(33), viper.GetUint32("check-cache-limit"))
 		require.Equal(t, 5*time.Second, viper.GetDuration("check-query-cache-ttl"))
 
 		require.Equal(t, []string{"33", "44"}, viper.GetStringSlice("request-duration-datastore-query-count-buckets"))
@@ -1263,6 +1357,12 @@ func TestRunCommandConfigIsMerged(t *testing.T) {
 		require.Equal(t, "1ms", viper.GetString("dispatch-throttling-frequency"))
 		require.Equal(t, "120", viper.GetString("dispatch-throttling-threshold"))
 		require.Equal(t, "130", viper.GetString("dispatch-throttling-max-threshold"))
+		require.Equal(t, "120", viper.GetString("max-condition-evaluation-cost"))
+		require.Equal(t, uint64(120), viper.GetUint64("max-condition-evaluation-cost"))
+		require.True(t, viper.GetBool("access-control-enabled"))
+		require.Equal(t, "12345", viper.GetString("access-control-store-id"))
+		require.Equal(t, "67891", viper.GetString("access-control-model-id"))
+		require.True(t, viper.GetBool("context-propagation-to-datastore"))
 
 		return nil
 	}
@@ -1303,13 +1403,14 @@ func TestHTTPHeaders(t *testing.T) {
 	writeModelResp, err := client.WriteAuthorizationModel(context.Background(), &openfgav1.WriteAuthorizationModelRequest{
 		StoreId:       storeID,
 		SchemaVersion: typesystem.SchemaVersion1_1,
-		TypeDefinitions: parser.MustTransformDSLToProto(`model
-	schema 1.1
-type user
+		TypeDefinitions: parser.MustTransformDSLToProto(`
+			model
+				schema 1.1
+			type user
 
-type document
-  relations
-	define viewer: [user]`).GetTypeDefinitions(),
+			type document
+				relations
+					define viewer: [user]`).GetTypeDefinitions(),
 	})
 	require.NoError(t, err)
 
@@ -1339,6 +1440,11 @@ type document
 			httpPath:     fmt.Sprintf("http://%s/stores/%s/streamed-list-objects", cfg.HTTP.Addr, storeID),
 			httpJSONBody: `{"type": "document", "user": "user:anne", "relation": "viewer"}`,
 		},
+		`listusers`: {
+			httpVerb:     "POST",
+			httpPath:     fmt.Sprintf("http://%s/stores/%s/list-users", cfg.HTTP.Addr, storeID),
+			httpJSONBody: `{"object": { "type": "document", "id": "1" } , "relation": "viewer", "user_filters": [ {"type":"user"} ]}`,
+		},
 		`expand`: {
 			httpVerb:     "POST",
 			httpPath:     fmt.Sprintf("http://%s/stores/%s/expand", cfg.HTTP.Addr, storeID),
@@ -1360,6 +1466,7 @@ type document
 
 			httpResponse, err := httpClient.Do(req)
 			require.NoError(t, err)
+			defer httpResponse.Body.Close()
 
 			// These are set in the server RPCs
 			require.Len(t, httpResponse.Header[server.AuthorizationModelIDHeader], 1)
@@ -1372,6 +1479,97 @@ type document
 			require.NotEmpty(t, httpResponse.Header[requestid.RequestIDHeader][0])
 
 			httpResponse.Body.Close()
+		})
+	}
+}
+
+func TestServerContext_datastoreConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         *serverconfig.Config
+		wantDSType     interface{}
+		wantSerializer encoder.ContinuationTokenSerializer
+		wantErr        error
+	}{
+		{
+			name: "sqlite",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine: "sqlite",
+				},
+			},
+			wantDSType:     &sqlite.Datastore{},
+			wantSerializer: &sqlcommon.SQLContinuationTokenSerializer{},
+			wantErr:        nil,
+		},
+		{
+			name: "sqlite_bad_uri",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine: "sqlite",
+					URI:    "uri?is;bad=true",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("invalid semicolon separator in query"),
+		},
+		{
+			name: "mysql_bad_uri",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine:   "mysql",
+					Username: "root",
+					Password: "password",
+					URI:      "uri?is;bad=true",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("missing the slash separating the database name"),
+		},
+		{
+			name: "postgres_bad_uri",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine:   "postgres",
+					Username: "root",
+					Password: "password",
+					URI:      "~!@#$%^&*()_+}{:<>?",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("parse postgres connection uri"),
+		},
+		{
+			name: "unsupported_engine",
+			config: &serverconfig.Config{
+				Datastore: serverconfig.DatastoreConfig{
+					Engine: "unsupported",
+				},
+			},
+			wantDSType:     nil,
+			wantSerializer: nil,
+			wantErr:        errors.New("storage engine 'unsupported' is unsupported"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &ServerContext{
+				Logger: logger.NewNoopLogger(),
+			}
+			datastore, serializer, err := s.datastoreConfig(tt.config)
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.Nil(t, datastore)
+				assert.Nil(t, serializer)
+				assert.ErrorContains(t, err, tt.wantErr.Error())
+			} else {
+				require.NoError(t, err)
+				assert.IsType(t, tt.wantDSType, datastore)
+				assert.Equal(t, tt.wantSerializer, serializer)
+			}
 		})
 	}
 }

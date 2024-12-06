@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 
 	"github.com/openfga/openfga/internal/condition"
 	"github.com/openfga/openfga/internal/condition/types"
@@ -198,6 +199,50 @@ func TestEvaluate(t *testing.T) {
 			result: condition.EvaluationResult{
 				ConditionMet:      false,
 				MissingParameters: []string{"param1"},
+			},
+		},
+		{
+			name: "mix_of_missing_params_and_truthy_eval",
+			condition: &openfgav1.Condition{
+				Name:       "condition1",
+				Expression: "param1 == 'ok' || param2 == 'ok'",
+				Parameters: map[string]*openfgav1.ConditionParamTypeRef{
+					"param1": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+					"param2": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+				},
+			},
+			context: map[string]interface{}{
+				"param1": "ok",
+			},
+			result: condition.EvaluationResult{
+				ConditionMet:      true,
+				MissingParameters: []string{"param2"},
+			},
+		},
+		{
+			name: "mix_of_missing_params_and_falsey_eval",
+			condition: &openfgav1.Condition{
+				Name:       "condition1",
+				Expression: "param1 == 'ok' && param2 == 'ok'",
+				Parameters: map[string]*openfgav1.ConditionParamTypeRef{
+					"param1": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+					"param2": {
+						TypeName: openfgav1.ConditionParamTypeRef_TYPE_NAME_STRING,
+					},
+				},
+			},
+			context: map[string]interface{}{
+				"param1": "ok",
+			},
+			result: condition.EvaluationResult{
+				ConditionMet:      false,
+				MissingParameters: []string{"param2"},
 			},
 		},
 		{

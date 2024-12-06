@@ -30,6 +30,18 @@
             "default": 4294967295,
             "x-env-variable": "OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_OBJECTS"
         },
+        "maxConcurrentReadsForListUsers": {
+            "description": "The maximum allowed number of concurrent reads in a single ListUsers query (default is MaxUint32).",
+            "type": "integer",
+            "default": 4294967295,
+            "x-env-variable": "OPENFGA_MAX_CONCURRENT_READS_FOR_LIST_USERS"
+        },
+        "maxConditionEvaluationCost": {
+            "description": "The maximum cost for CEL condition evaluation before a request returns an error (default is 100).",
+            "type": "integer",
+            "default": 100,
+            "x-env-variable": "OPENFGA_MAX_CONDITION_EVALUATION_COST"
+        },
         "changelogHorizonOffset": {
             "description": "The offset (in minutes) from the current time. Changes that occur after this offset will not be included in the response of ReadChanges.",
             "type": "integer",
@@ -62,6 +74,20 @@
             "default": 1000,
             "x-env-variable": "OPENFGA_LIST_OBJECTS_MAX_RESULTS"
         },
+        "listUsersDeadline": {
+            "description": "The timeout deadline for serving ListUsers requests. If 0s, there is no deadline",
+            "type": "string",
+            "format": "duration",
+            "default": "3s",
+            "x-env-variable": "OPENFGA_LIST_USERS_DEADLINE"
+        },
+        "listUsersMaxResults": {
+            "description": "The maximum results to return in ListUsers API response. If 0, all results can be returned",
+            "type": "integer",
+            "minimum": 0,
+            "default": 1000,
+            "x-env-variable": "OPENFGA_LIST_USERS_MAX_RESULTS"
+        },
         "requestDurationDatastoreQueryCountBuckets": {
             "description": "Datastore query count buckets used to label the histogram metric for measuring request duration.",
             "type": "array",
@@ -84,15 +110,45 @@
             "default": [50, 200],
             "x-env-variable": "OPENFGA_REQUEST_DURATION_DISPATCH_COUNT_BUCKETS"
         },
+        "contextPropagationToDatastore": {
+            "description": "Propagate a requests context to the datastore implementation. Settings this parameter can result in connection pool draining on request aborts and timeouts.",
+            "type": "boolean",
+            "default": false,
+            "x-env-variable": "OPENFGA_CONTEXT_PROPAGATION_TO_DATASTORE"
+        },
         "experimentals": {
             "description": "a list of experimental features to enable",
             "type": "array",
             "items": {
                 "type": "string",
-                "enum": []
+                "enum": ["enable-check-optimizations", "enable-access-control"]
             },
             "default": [],
             "x-env-variable": "OPENFGA_EXPERIMENTALS"
+        },
+        "accessControl": {
+            "description": "the configuration needed for the access control store",
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "Enable/disable the access control store.",
+                    "type": "boolean",
+                    "default": false,
+                    "x-env-variable": "OPENFGA_ACCESS_CONTROL_ENABLED"
+                },
+                "storeId": {
+                    "description": "The storeId to be used for the access control store.",
+                    "type": "string",
+                    "default": "",
+                    "x-env-variable": "OPENFGA_ACCESS_CONTROL_STORE_ID"
+                },
+                "modelId": {
+                    "description": "The modelId to be used for the access control store.",
+                    "type": "string",
+                    "default": "",
+                    "x-env-variable": "OPENFGA_ACCESS_CONTROL_MODEL_ID"
+                }
+            }
         },
         "playground": {
             "type": "object",
@@ -134,7 +190,7 @@
                 "engine": {
                     "description": "The datastore engine that will be used for persistence.",
                     "type": "string",
-                    "enum": ["memory", "postgres", "mysql"],
+                    "enum": ["memory", "postgres", "mysql", "sqlite"],
                     "default": "memory",
                     "x-env-variable": "OPENFGA_DATASTORE_ENGINE"
                 },
@@ -143,7 +199,8 @@
                     "type": "string",
                     "examples": [
                         "postgres://user:pass@host:port/datastore?opts",
-                        "user:pass@tcp(mysql-host:port)/datastore?parseTime=true&other-opts"
+                        "user:pass@tcp(mysql-host:port)/datastore?parseTime=true&other-opts",
+                        "file:/path/to/sqlite.db"
                     ],
                     "x-env-variable": "OPENFGA_DATASTORE_URI"
                 },
@@ -407,17 +464,52 @@
                 }
             }
         },
+        "checkCache": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "description": "the size limit (in items) of the cache for Check (queries and iterators)",
+                    "type": "integer",
+                    "default": "10000",
+                    "x-env-variable": "OPENFGA_CHECK_CACHE_LIMIT"
+                }
+            }
+        },
+        "checkIteratorCache": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "enable caching of datastore iterators. The key is a string representing a database query, and the value is a list of tuples. Each iterator is the result of a database query, for example usersets related to a specific object, or objects related to a specific user, up to a certain number of tuples per iterator. If the request's consistency is HIGHER_CONSISTENCY, this cache is not used.",
+                    "type": "bool",
+                    "default": "false",
+                    "x-env-variable": "OPENFGA_CHECK_ITERATOR_CACHE_ENABLED"
+                },
+                "maxResults": {
+                    "description": "if caching of datastore iterators of Check requests is enabled, this is the limit of tuples to cache per key",
+                    "type": "integer",
+                    "default": "10000",
+                    "x-env-variable": "OPENFGA_CHECK_ITERATOR_CACHE_MAX_RESULTS"
+                },
+                "ttl": {
+                    "description": "if caching of datastore iterators of Check requests is enabled, this is the TTL of each value",
+                    "type": "string",
+                    "format": "duration",
+                    "default": "10s",
+                    "x-env-variable": "OPENFGA_CHECK_ITERATOR_CACHE_TTL"
+                }
+            }
+        },
         "checkQueryCache": {
             "type": "object",
             "properties": {
                 "enabled": {
-                    "description": "when executing Check and ListObjects requests, enables caching. This will turn Check and ListObjects responses into eventually consistent responses",
+                    "description": "enable caching of Check requests. The key is a string representing a query, and the value is a boolean. For example, if you have a relation `define viewer: owner or editor`, and the query is Check(user:anne, viewer, doc:1), we'll evaluate the `owner` relation and the `editor` relation and cache both results: (user:anne, viewer, doc:1) -> allowed=true and (user:anne, owner, doc:1) -> allowed=true. The cache is stored in-memory; the cached values are overwritten on every change in the result, and cleared after the configured TTL. This flag improves latency, but turns Check and ListObjects into eventually consistent APIs. If the request's consistency is HIGHER_CONSISTENCY, this cache is not used.",
                     "type": "bool",
                     "default": "false",
                     "x-env-variable": "OPENFGA_CHECK_QUERY_CACHE_ENABLED"
                 },
                 "limit": {
-                    "description": "if caching of Check and ListObjects calls is enabled, this is the size limit (in items) of the cache",
+                    "description": "DEPRECATED use OPENFGA_CHECK_CACHE_LIMIT. If caching of Check and ListObjects calls is enabled, this is the size limit (in items) of the cache",
                     "type": "integer",
                     "default": "10000",
                     "x-env-variable": "OPENFGA_CHECK_QUERY_CACHE_LIMIT"
@@ -431,32 +523,90 @@
                 }
             }
         },
-        "dispatchThrottling": {
+        "checkDispatchThrottling": {
             "type": "object",
             "properties": {
                 "enabled": {
-                    "description": "enable throttling when request's number of dispatches is high",
+                    "description": "enable throttling when check request's number of dispatches is high",
                     "type": "bool",
                     "default": "false",
-                    "x-env-variable": "OPENFGA_DISPATCH_THROTTLING_ENABLED"
+                    "x-env-variable": "OPENFGA_CHECK_DISPATCH_THROTTLING_ENABLED"
                 },
                 "frequency": {
-                    "description": "the frequency period that the deprioritized throttling queue is evaluated. A higher value will result in more aggressive throttling",
+                    "description": "the frequency period that the deprioritized throttling queue is evaluated for a check request. A higher value will result in more aggressive throttling",
                     "type": "duration",
                     "default": "10µs",
-                    "x-env-variable": "OPENFGA_DISPATCH_THROTTLING_FREQUENCY"
+                    "x-env-variable": "OPENFGA_CHECK_DISPATCH_THROTTLING_FREQUENCY"
                 },
                 "threshold": {
-                    "description": "define the number of recursive operations to occur before getting throttled",
+                    "description": "define the number of recursive operations to occur before getting throttled for a check request",
                     "type": "integer",
                     "default": "100",
-                    "x-env-variable": "OPENFGA_DISPATCH_THROTTLING_THRESHOLD"
+                    "x-env-variable": "OPENFGA_CHECK_DISPATCH_THROTTLING_THRESHOLD"
                 },
                 "maxThreshold": {
                     "description": "define the maximum dispatch threshold beyond above which requests will be throttled. 0 will use the 'dispatchThrottling.threshold' value as maximum",
                     "type": "integer",
                     "default": "0",
-                    "x-env-variable": "OPENFGA_DISPATCH_THROTTLING_MAX_THRESHOLD"
+                    "x-env-variable": "OPENFGA_CHECK_DISPATCH_THROTTLING_MAX_THRESHOLD"
+                }
+            }
+        },
+        "listObjectsDispatchThrottling": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "enable throttling when list objects request's number of dispatches is high",
+                    "type": "bool",
+                    "default": "false",
+                    "x-env-variable": "OPENFGA_LIST_OBJECTS_DISPATCH_THROTTLING_ENABLED"
+                },
+                "frequency": {
+                    "description": "the frequency period that the deprioritized throttling queue is evaluated for a list objects request. A higher value will result in more aggressive throttling",
+                    "type": "duration",
+                    "default": "10µs",
+                    "x-env-variable": "OPENFGA_LIST_OBJECTS_DISPATCH_THROTTLING_FREQUENCY"
+                },
+                "threshold": {
+                    "description": "define the number of recursive operations to occur before getting throttled for a list objects request",
+                    "type": "integer",
+                    "default": "100",
+                    "x-env-variable": "OPENFGA_LIST_OBJECTS_DISPATCH_THROTTLING_THRESHOLD"
+                },
+                "maxThreshold": {
+                    "description": "define the maximum dispatch threshold beyond above which requests will be throttled for a list objects request. 0 will use the 'dispatchThrottling.threshold' value as maximum",
+                    "type": "integer",
+                    "default": "0",
+                    "x-env-variable": "OPENFGA_LIST_OBJECTS_DISPATCH_THROTTLING_MAX_THRESHOLD"
+                }
+            }
+        },
+        "listUsersDispatchThrottling": {
+            "type": "object",
+            "properties": {
+                "enabled": {
+                    "description": "enable throttling when list users request's number of dispatches is high",
+                    "type": "bool",
+                    "default": "false",
+                    "x-env-variable": "OPENFGA_LIST_USERS_DISPATCH_THROTTLING_ENABLED"
+                },
+                "frequency": {
+                    "description": "the frequency period that the deprioritized throttling queue is evaluated for a list users request. A higher value will result in more aggressive throttling",
+                    "type": "duration",
+                    "default": "10µs",
+                    "x-env-variable": "OPENFGA_LIST_USERS_DISPATCH_THROTTLING_FREQUENCY"
+                },
+                "threshold": {
+                    "description": "define the number of recursive operations to occur before getting throttled for a list users request",
+                    "type": "integer",
+                    "default": "100",
+                    "x-env-variable": "OPENFGA_LIST_USERS_DISPATCH_THROTTLING_THRESHOLD"
+                },
+                "maxThreshold": {
+                    "description": "define the maximum dispatch threshold beyond above which requests will be throttled for a list users request. 0 will use the 'dispatchThrottling.threshold' value as maximum",
+                    "type": "integer",
+                    "default": "0",
+                    "x-env-variable": "OPENFGA_LIST_USERS_DISPATCH_THROTTLING_MAX_THRESHOLD"
                 }
             }
         },
@@ -480,6 +630,30 @@
                     "description": "The OIDC audience of the tokens being signed by the authorization server.",
                     "type": "string",
                     "x-env-variable": "OPENFGA_AUTHN_OIDC_AUDIENCE"
+                },
+                "issuerAliases": {
+                    "description": "the OIDC issuer DNS aliases that will be accepted as valid when verifying the `iss` field of the JWTs.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "x-env-variable": "OPENFGA_AUTHN_OIDC_ISSUER_ALIASES"
+                },
+                "subjects": {
+                    "description": "the OIDC subject names that will be accepted as valid when verifying the `sub` field of the JWTs. If empty, every `sub` will be allowed",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "x-env-variable": "OPENFGA_AUTHN_OIDC_SUBJECTS"
+                },
+                "clientIdClaims": {
+                    "description": "the OIDC client id claims that will be used to parse the clientID - configure in order of priority (first is highest). Defaults to [`azp`, `client_id`]",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "x-env-variable": "OPENFGA_AUTHN_OIDC_CLIENT_ID_CLAIMS"
                 }
             },
             "required": ["issuer", "audience"]

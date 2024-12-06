@@ -6,8 +6,9 @@ import (
 	"regexp"
 	"strings"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
 
 type TupleWithCondition interface {
@@ -25,16 +26,15 @@ type TupleWithoutCondition interface {
 type UserType string
 
 const (
-	User    UserType = "user"
-	UserSet UserType = "userset"
+	User     UserType = "user"
+	UserSet  UserType = "userset"
+	Wildcard          = "*"
 )
-
-const Wildcard = "*"
 
 var (
 	userIDRegex   = regexp.MustCompile(`^[^:#\s]+$`)
 	objectRegex   = regexp.MustCompile(`^[^:#\s]+:[^#:\s]+$`)
-	userSetRegex  = regexp.MustCompile(`^[^:#\s]+:[^#\s]+#[^:#\s]+$`)
+	userSetRegex  = regexp.MustCompile(`^[^:#\s]+:[^#:*\s]+#[^:#*\s]+$`)
 	relationRegex = regexp.MustCompile(`^[^:#@\s]+$`)
 )
 
@@ -154,8 +154,55 @@ func ObjectKey(obj *openfgav1.Object) string {
 	return BuildObject(obj.GetType(), obj.GetId())
 }
 
-// SplitObject splits an object into an objectType and an objectID. If no type is present, it returns the empty string
-// and the original object.
+type UserString = string
+
+// UserProtoToString returns a string from a User proto. Ex: 'user:maria' or 'group:fga#member'. It is
+// the opposite of StringToUserProto function.
+func UserProtoToString(obj *openfgav1.User) UserString {
+	switch obj.GetUser().(type) {
+	case *openfgav1.User_Wildcard:
+		return fmt.Sprintf("%s:*", obj.GetWildcard().GetType())
+	case *openfgav1.User_Userset:
+		us := obj.GetUser().(*openfgav1.User_Userset)
+		return fmt.Sprintf("%s:%s#%s", us.Userset.GetType(), us.Userset.GetId(), us.Userset.GetRelation())
+	case *openfgav1.User_Object:
+		us := obj.GetUser().(*openfgav1.User_Object)
+		return fmt.Sprintf("%s:%s", us.Object.GetType(), us.Object.GetId())
+	default:
+		panic("unsupported type")
+	}
+}
+
+// StringToUserProto returns a User proto from a string. Ex: 'user:maria#member'.
+// It is the opposite of UserProtoToString function.
+func StringToUserProto(userKey UserString) *openfgav1.User {
+	userObj, userRel := SplitObjectRelation(userKey)
+	userObjType, userObjID := SplitObject(userObj)
+	if userRel == "" && userObjID == "*" {
+		return &openfgav1.User{User: &openfgav1.User_Wildcard{
+			Wildcard: &openfgav1.TypedWildcard{
+				Type: userObjType,
+			},
+		}}
+	}
+	if userRel == "" {
+		return &openfgav1.User{User: &openfgav1.User_Object{Object: &openfgav1.Object{
+			Type: userObjType,
+			Id:   userObjID,
+		}}}
+	}
+	return &openfgav1.User{User: &openfgav1.User_Userset{Userset: &openfgav1.UsersetUser{
+		Type:     userObjType,
+		Id:       userObjID,
+		Relation: userRel,
+	}}}
+}
+
+// SplitObject splits an object into an objectType, an optional objectRelation, and an objectID.
+// E.g.
+//  1. "group:fga" returns "group" and "fga".
+//  2. "group#member:fga" returns "group#member" and "fga".
+//  3. "anne" returns "" and "anne".
 func SplitObject(object string) (string, string) {
 	switch i := strings.IndexByte(object, ':'); i {
 	case -1:
@@ -234,7 +281,12 @@ func TupleKeyToString(tk TupleWithoutCondition) string {
 // TupleKeyWithConditionToString converts a tuple key with condition into its string representation. It assumes the tupleKey is valid
 // (i.e. no forbidden characters).
 func TupleKeyWithConditionToString(tk TupleWithCondition) string {
-	return fmt.Sprintf("%s#%s@%s (condition %s)", tk.GetObject(), tk.GetRelation(), tk.GetUser(), tk.GetCondition())
+	var sb strings.Builder
+	sb.WriteString(TupleKeyToString(tk))
+	if tk.GetCondition() != nil {
+		sb.WriteString(fmt.Sprintf(" (condition %s)", tk.GetCondition().GetName()))
+	}
+	return sb.String()
 }
 
 // IsValidObject determines if a string s is a valid object. A valid object contains exactly one `:` and no `#` or spaces.
@@ -249,9 +301,6 @@ func IsValidRelation(s string) bool {
 
 // IsValidUser determines if a string is a valid user. A valid user contains at most one `:`, at most one `#` and no spaces.
 func IsValidUser(user string) bool {
-	if strings.Count(user, ":") > 1 || strings.Count(user, "#") > 1 {
-		return false
-	}
 	if user == Wildcard || userIDRegex.MatchString(user) || objectRegex.MatchString(user) || userSetRegex.MatchString(user) {
 		return true
 	}
@@ -267,14 +316,8 @@ func IsWildcard(s string) bool {
 // IsTypedWildcard returns true if the string 's' is a typed wildcard. A typed wildcard
 // has the form 'type:*'.
 func IsTypedWildcard(s string) bool {
-	if IsValidObject(s) {
-		_, id := SplitObject(s)
-		if id == Wildcard {
-			return true
-		}
-	}
-
-	return false
+	t, id := SplitObject(s)
+	return t != "" && id == Wildcard
 }
 
 // TypedPublicWildcard returns the string tuple representation for a given object type (ex: "user:*").
@@ -341,4 +384,41 @@ func ParseTupleString(s string) (*openfgav1.TupleKey, error) {
 		Relation: relation,
 		User:     user,
 	}, nil
+}
+
+func ToUserPartsFromObjectRelation(u *openfgav1.ObjectRelation) (string, string, string) {
+	userObjectType, userObjectID := SplitObject(u.GetObject())
+	return userObjectType, userObjectID, u.GetRelation()
+}
+
+func ToUserParts(user string) (string, string, string) {
+	userObject, userRelation := SplitObjectRelation(user) // e.g. (person:bob, "") or (group:abc, member) or (person:*, "")
+
+	userObjectType, userObjectID := SplitObject(userObject)
+
+	return userObjectType, userObjectID, userRelation
+}
+
+func FromUserParts(userObjectType, userObjectID, userRelation string) string {
+	user := userObjectID
+	if userObjectType != "" {
+		user = fmt.Sprintf("%s:%s", userObjectType, userObjectID)
+	}
+	if userRelation != "" {
+		user = fmt.Sprintf("%s#%s", user, userRelation)
+	}
+	return user
+}
+
+// IsSelfDefining returns true if the tuple is reflexive/self-defining. E.g. Document:1#viewer@document:1#viewer.
+// See https://github.com/openfga/rfcs/blob/main/20240328-queries-with-usersets.md
+func IsSelfDefining(tuple *openfgav1.TupleKey) bool {
+	userObject, userRelation := SplitObjectRelation(tuple.GetUser())
+	return tuple.GetRelation() == userRelation && tuple.GetObject() == userObject
+}
+
+// UsersetMatchTypeAndRelation returns true if the type and relation of a userset match the inputs.
+func UsersetMatchTypeAndRelation(userset, relation, typee string) bool {
+	userObjectType, _, userRelation := ToUserParts(userset)
+	return relation == userRelation && typee == userObjectType
 }

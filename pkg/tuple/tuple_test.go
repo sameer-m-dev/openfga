@@ -3,54 +3,62 @@ package tuple
 import (
 	"testing"
 
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
 
 func TestSplitObjectId(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		objectID     string
-		expectedType string
-		expectedOID  string
+		name                    string
+		objectID                string
+		expectedTypeAndRelation string
+		expectedOID             string
 	}{
 		{
 			name: "empty",
 		},
 		{
-			name:         "type_only",
-			objectID:     "foo:",
-			expectedType: "foo",
+			name:                    "type_only",
+			objectID:                "foo:",
+			expectedTypeAndRelation: "foo",
 		},
+
 		{
 			name:        "no_separator",
 			objectID:    "foo",
 			expectedOID: "foo",
 		},
 		{
-			name:         "missing_type",
-			objectID:     ":foo",
-			expectedType: "",
-			expectedOID:  "foo",
+			name:                    "missing_type",
+			objectID:                ":foo",
+			expectedTypeAndRelation: "",
+			expectedOID:             "foo",
 		},
 		{
-			name:         "valid_input",
-			objectID:     "foo:bar",
-			expectedType: "foo",
-			expectedOID:  "bar",
+			name:                    "valid_input_with_relation",
+			objectID:                "foo#bar:baz",
+			expectedTypeAndRelation: "foo#bar",
+			expectedOID:             "baz",
 		},
 		{
-			name:         "separator_in_OID",
-			objectID:     "url:https://bar/baz",
-			expectedType: "url",
-			expectedOID:  "https://bar/baz",
+			name:                    "valid_input_without_relation",
+			objectID:                "foo:bar",
+			expectedTypeAndRelation: "foo",
+			expectedOID:             "bar",
+		},
+		{
+			name:                    "separator_in_OID",
+			objectID:                "url:https://bar/baz",
+			expectedTypeAndRelation: "url",
+			expectedOID:             "https://bar/baz",
 		},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			td, oid := SplitObject(tc.objectID)
 
-			require.Equal(t, tc.expectedType, td)
+			require.Equal(t, tc.expectedTypeAndRelation, td)
 			require.Equal(t, tc.expectedOID, oid)
 		})
 	}
@@ -224,12 +232,24 @@ func TestToObjectRelationString(t *testing.T) {
 }
 
 func TestTupleKeyToString(t *testing.T) {
+	require.Equal(t, "document:1#viewer@group:fga#member", TupleKeyToString(NewTupleKey("document:1", "viewer", "group:fga#member")))
 	require.Equal(t, "document:1#viewer@jon", TupleKeyToString(NewTupleKey("document:1", "viewer", "jon")))
 	require.Equal(t, "document:1#viewer@user:bob", TupleKeyToString(NewTupleKey("document:1", "viewer", "user:bob")))
 	require.Equal(t, "document:1#viewer@", TupleKeyToString(NewTupleKey("document:1", "viewer", "")))
 	require.Equal(t, "document:1#@jon", TupleKeyToString(NewTupleKey("document:1", "", "jon")))
 	require.Equal(t, "#viewer@jon", TupleKeyToString(NewTupleKey("", "viewer", "jon")))
 	require.Equal(t, "#@", TupleKeyToString(NewTupleKey("", "", "")))
+}
+
+func TestTupleKeyWithConditionToString(t *testing.T) {
+	require.Equal(t, "document:1#viewer@group:fga#member (condition condX)",
+		TupleKeyWithConditionToString(NewTupleKeyWithCondition("document:1", "viewer", "group:fga#member", "condX", nil)))
+	require.Equal(t, "document:1#viewer@user:maria (condition condX)",
+		TupleKeyWithConditionToString(NewTupleKeyWithCondition("document:1", "viewer", "user:maria", "condX", nil)))
+	require.Equal(t, "document:1#viewer@user:* (condition condX)",
+		TupleKeyWithConditionToString(NewTupleKeyWithCondition("document:1", "viewer", "user:*", "condX", nil)))
+	require.Equal(t, "document:1#viewer@user:*",
+		TupleKeyWithConditionToString(NewTupleKey("document:1", "viewer", "user:*")))
 }
 
 func TestIsWildcard(t *testing.T) {
@@ -285,6 +305,10 @@ func TestIsValidUser(t *testing.T) {
 		},
 		{
 			name:  "anne@openfga .com", // empty space
+			valid: false,
+		},
+		{
+			name:  "group:*#member",
 			valid: false,
 		},
 	} {
@@ -357,6 +381,108 @@ func TestGetObjectRelationAsString(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := GetObjectRelationAsString(tc.input)
 			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestFromUserProto(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    *openfgav1.User
+		expected string
+	}{
+		{
+			name: "user_with_id",
+			input: &openfgav1.User{
+				User: &openfgav1.User_Object{
+					Object: &openfgav1.Object{
+						Type: "user",
+						Id:   "id-123",
+					},
+				},
+			},
+			expected: "user:id-123",
+		},
+		{
+			name: "user_with_id_and_relation",
+			input: &openfgav1.User{
+				User: &openfgav1.User_Userset{
+					Userset: &openfgav1.UsersetUser{
+						Type:     "user",
+						Id:       "id-123",
+						Relation: "member",
+					},
+				},
+			},
+			expected: "user:id-123#member",
+		},
+		{
+			name: "user_with_wildcard",
+			input: &openfgav1.User{
+				User: &openfgav1.User_Wildcard{
+					Wildcard: &openfgav1.TypedWildcard{
+						Type: "user",
+					},
+				},
+			},
+			expected: "user:*",
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			actual := UserProtoToString(tc.input)
+			require.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
+func TestToUserProto(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		input    string
+		expected *openfgav1.User
+	}{
+		{
+			name:  "user_with_id",
+			input: "user:id-123",
+			expected: &openfgav1.User{
+				User: &openfgav1.User_Object{
+					Object: &openfgav1.Object{
+						Type: "user",
+						Id:   "id-123",
+					},
+				},
+			},
+		},
+		{
+			name:  "user_with_id_and_relation",
+			input: "user:id-123#member",
+			expected: &openfgav1.User{
+				User: &openfgav1.User_Userset{
+					Userset: &openfgav1.UsersetUser{
+						Type:     "user",
+						Id:       "id-123",
+						Relation: "member",
+					},
+				},
+			},
+		},
+		{
+			name:  "user_with_wildcard",
+			input: "user:*",
+			expected: &openfgav1.User{
+				User: &openfgav1.User_Wildcard{
+					Wildcard: &openfgav1.TypedWildcard{
+						Type: "user",
+					},
+				},
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			actual := StringToUserProto(tc.input)
+			require.Equal(t, tc.expected, actual)
 		})
 	}
 }
@@ -439,6 +565,110 @@ func TestParseTupleString(t *testing.T) {
 			if !test.expectedErr {
 				require.NotNil(t, tuple)
 				require.Equal(t, test.tuple, tuple)
+			}
+		})
+	}
+}
+
+func TestFromUserParts(t *testing.T) {
+	require.Equal(t, "jon", FromUserParts("", "jon", ""))
+	require.Equal(t, "user:jon", FromUserParts("user", "jon", ""))
+	require.Equal(t, "user:*", FromUserParts("user", "*", ""))
+	require.Equal(t, "group:eng#member", FromUserParts("group", "eng", "member"))
+}
+
+func TestToUserParts(t *testing.T) {
+	userObjectType, userObjectID, userRelation := ToUserParts("jon")
+	require.Equal(t, "", userObjectType)
+	require.Equal(t, "jon", userObjectID)
+	require.Equal(t, "", userRelation)
+
+	userObjectType, userObjectID, userRelation = ToUserParts("user:jon")
+	require.Equal(t, "user", userObjectType)
+	require.Equal(t, "jon", userObjectID)
+	require.Equal(t, "", userRelation)
+
+	userObjectType, userObjectID, userRelation = ToUserParts("user:*")
+	require.Equal(t, "user", userObjectType)
+	require.Equal(t, "*", userObjectID)
+	require.Equal(t, "", userRelation)
+
+	userObjectType, userObjectID, userRelation = ToUserParts("group:eng#member")
+	require.Equal(t, "group", userObjectType)
+	require.Equal(t, "eng", userObjectID)
+	require.Equal(t, "member", userRelation)
+}
+
+func TestToUserPartsFromObjectRelation(t *testing.T) {
+	userObjectType, userObjectID, userRelation := ToUserPartsFromObjectRelation(&openfgav1.ObjectRelation{Object: "group:eng", Relation: "member"})
+	require.Equal(t, "group", userObjectType)
+	require.Equal(t, "eng", userObjectID)
+	require.Equal(t, "member", userRelation)
+
+	userObjectType, userObjectID, userRelation = ToUserPartsFromObjectRelation(&openfgav1.ObjectRelation{Object: "user:*"})
+	require.Equal(t, "user", userObjectType)
+	require.Equal(t, "*", userObjectID)
+	require.Equal(t, "", userRelation)
+}
+
+func TestIsSelfDefining(t *testing.T) {
+	testCases := map[string]struct {
+		tuples       []string
+		selfDefining bool
+	}{
+		`true`: {
+			selfDefining: true,
+			tuples: []string{
+				"group:1#member@group:1#member",
+			},
+		},
+		`false`: {
+			selfDefining: false,
+			tuples: []string{
+				"group:2#member@group:1#member",
+				"group:1#member@group:2#member",
+				"document:1#member@group:1#member",
+				"group:1#member@document:1#member",
+				"group:1#member@group:1#viewer",
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			for _, tuple := range tc.tuples {
+				tupleKey := MustParseTupleString(tuple)
+				require.Equal(t, tc.selfDefining, IsSelfDefining(tupleKey), tupleKey)
+			}
+		})
+	}
+}
+
+func TestUsersetMatchesTypeAndRelation(t *testing.T) {
+	testCases := map[string]struct {
+		inputs  [][]string // userset, relation, type
+		matches bool
+	}{
+		`true`: {
+			matches: true,
+			inputs: [][]string{
+				{"group:1#member", "member", "group"},
+			},
+		},
+		`false`: {
+			matches: false,
+			inputs: [][]string{
+				{"group:1#member", "unknown", "group"},
+				{"group:1#member", "member", "unknown"},
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			for _, input := range tc.inputs {
+				actual := UsersetMatchTypeAndRelation(input[0], input[1], input[2])
+				require.Equal(t, tc.matches, actual, input)
 			}
 		})
 	}

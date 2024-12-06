@@ -8,14 +8,18 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
 	"github.com/openfga/openfga/internal/mocks"
+	"github.com/openfga/openfga/internal/throttler/threshold"
+	"github.com/openfga/openfga/pkg/dispatch"
 	"github.com/openfga/openfga/pkg/storage"
 	"github.com/openfga/openfga/pkg/storage/memory"
+	storagetest "github.com/openfga/openfga/pkg/storage/test"
 	"github.com/openfga/openfga/pkg/testutils"
 	"github.com/openfga/openfga/pkg/tuple"
 	"github.com/openfga/openfga/pkg/typesystem"
@@ -26,23 +30,26 @@ func TestReverseExpandResultChannelClosed(t *testing.T) {
 
 	store := ulid.Make().String()
 
-	model := testutils.MustTransformDSLToProtoWithID(`model
-  schema 1.1
-type user
-type document
-  relations
-	define viewer: [user]`)
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
 
-	typeSystem := typesystem.New(model)
+		type user
+		type document
+			relations
+				define viewer: [user]`)
+
+	typeSystem, err := typesystem.New(model)
+	require.NoError(t, err)
 	mockController := gomock.NewController(t)
 	defer mockController.Finish()
 
 	var tuples []*openfgav1.Tuple
 
 	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
-	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any()).
+	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any(), gomock.Any()).
 		Times(1).
-		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter) (storage.TupleIterator, error) {
+		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
 			iterator := storage.NewStaticTupleIterator(tuples)
 			return iterator, nil
 		})
@@ -55,7 +62,6 @@ type document
 	// process query in one goroutine, but it will be cancelled almost right away
 	go func() {
 		reverseExpandQuery := NewReverseExpandQuery(mockDatastore, typeSystem)
-		t.Logf("before execute reverse expand")
 		err := reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
 			StoreID:    store,
 			ObjectType: "document",
@@ -68,7 +74,6 @@ type document
 			},
 			ContextualTuples: []*openfgav1.TupleKey{},
 		}, resultChan, NewResolutionMetadata())
-		t.Logf("after execute reverse expand")
 
 		if err != nil {
 			errChan <- err
@@ -92,14 +97,17 @@ func TestReverseExpandRespectsContextCancellation(t *testing.T) {
 
 	store := ulid.Make().String()
 
-	model := testutils.MustTransformDSLToProtoWithID(`model
-  schema 1.1
-type user
-type document
-  relations
-	define viewer: [user]`)
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
 
-	typeSystem := typesystem.New(model)
+		type user
+		type document
+			relations
+				define viewer: [user]`)
+
+	typeSystem, err := typesystem.New(model)
+	require.NoError(t, err)
 	mockController := gomock.NewController(t)
 	defer mockController.Finish()
 
@@ -110,12 +118,11 @@ type document
 	}
 
 	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
-	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any()).
+	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any(), gomock.Any()).
 		Times(1).
-		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter) (storage.TupleIterator, error) {
+		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
 			// simulate many goroutines trying to write to the results channel
 			iterator := storage.NewStaticTupleIterator(tuples)
-			t.Logf("returning tuple iterator")
 			return iterator, nil
 		})
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -126,7 +133,6 @@ type document
 	// process query in one goroutine, but it will be cancelled almost right away
 	go func() {
 		reverseExpandQuery := NewReverseExpandQuery(mockDatastore, typeSystem)
-		t.Logf("before execute reverse expand")
 		err := reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
 			StoreID:    store,
 			ObjectType: "document",
@@ -139,7 +145,6 @@ type document
 			},
 			ContextualTuples: []*openfgav1.TupleKey{},
 		}, resultChan, NewResolutionMetadata())
-		t.Logf("after execute reverse expand")
 
 		if err != nil {
 			errChan <- err
@@ -147,9 +152,7 @@ type document
 	}()
 	go func() {
 		// simulate max_results=1
-		t.Logf("before receive one result")
 		res := <-resultChan
-		t.Logf("after receive one result")
 
 		// send cancellation to the other goroutine
 		cancelFunc()
@@ -158,7 +161,6 @@ type document
 		if res.Object == "" {
 			panic("expected object, got nil")
 		}
-		t.Logf("received object %s ", res.Object)
 	}()
 
 	select {
@@ -174,20 +176,23 @@ func TestReverseExpandRespectsContextTimeout(t *testing.T) {
 
 	store := ulid.Make().String()
 
-	model := testutils.MustTransformDSLToProtoWithID(`model
-  schema 1.1
-type user
-type document
-  relations
-	define allowed: [user]
-	define viewer: [user] and allowed`)
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
 
-	typeSystem := typesystem.New(model)
+		type user
+		type document
+			relations
+				define allowed: [user]
+				define viewer: [user] and allowed`)
+
+	typeSystem, err := typesystem.New(model)
+	require.NoError(t, err)
 	mockController := gomock.NewController(t)
 	defer mockController.Finish()
 
 	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
-	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any()).
+	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any(), gomock.Any()).
 		MaxTimes(2) // we expect it to be 0 most of the time
 
 	timeoutCtx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
@@ -231,14 +236,17 @@ func TestReverseExpandErrorInTuples(t *testing.T) {
 
 	store := ulid.Make().String()
 
-	model := testutils.MustTransformDSLToProtoWithID(`model
-  schema 1.1
-type user
-type document
-  relations
-	define viewer: [user]`)
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
 
-	typeSystem := typesystem.New(model)
+		type user
+		type document
+			relations
+				define viewer: [user]`)
+
+	typeSystem, err := typesystem.New(model)
+	require.NoError(t, err)
 	mockController := gomock.NewController(t)
 	defer mockController.Finish()
 
@@ -249,8 +257,8 @@ type document
 	}
 
 	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
-	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter) (storage.TupleIterator, error) {
+	mockDatastore.EXPECT().ReadStartingWithUser(gomock.Any(), store, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
 			iterator := mocks.NewErrorTupleIterator(tuples)
 			return iterator, nil
 		})
@@ -304,17 +312,18 @@ func TestReverseExpandSendsAllErrorsThroughChannel(t *testing.T) {
 
 	store := ulid.Make().String()
 
-	model := testutils.MustTransformDSLToProtoWithID(`model
-  schema 1.1
-type user
-type document
-  relations
-    define viewer: [user]`)
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
+
+		type user
+		type document
+			relations
+				define viewer: [user]`)
 
 	mockDatastore := mocks.NewMockSlowDataStorage(memory.New(), 1*time.Second)
 
 	for i := 0; i < 50; i++ {
-		t.Logf("iteration %d", i)
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(1*time.Nanosecond))
 		t.Cleanup(cancel)
 
@@ -322,9 +331,13 @@ type document
 		errChan := make(chan error, 1)
 
 		go func() {
-			reverseExpandQuery := NewReverseExpandQuery(mockDatastore, typesystem.New(model))
-			t.Logf("before produce")
-			err := reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
+			ts, err := typesystem.New(model)
+			if err != nil {
+				t.Error("unexpected error creating model", err)
+				return
+			}
+			reverseExpandQuery := NewReverseExpandQuery(mockDatastore, ts)
+			err = reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
 				StoreID:    store,
 				ObjectType: "document",
 				Relation:   "viewer",
@@ -336,7 +349,6 @@ type document
 				},
 				ContextualTuples: []*openfgav1.TupleKey{},
 			}, resultChan, NewResolutionMetadata())
-			t.Logf("after produce")
 
 			if err != nil {
 				errChan <- err
@@ -366,6 +378,7 @@ func TestReverseExpandIgnoresInvalidTuples(t *testing.T) {
 	model := testutils.MustTransformDSLToProtoWithID(`
 		model
 			schema 1.1
+
 		type user
 		type group
 			relations
@@ -382,9 +395,9 @@ func TestReverseExpandIgnoresInvalidTuples(t *testing.T) {
 			ObjectType: "group",
 			Relation:   "member",
 			UserFilter: []*openfgav1.ObjectRelation{{Object: "user:anne"}},
-		}).
+		}, gomock.Any()).
 			Times(1).
-			DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter) (storage.TupleIterator, error) {
+			DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
 				return storage.NewStaticTupleIterator([]*openfgav1.Tuple{
 					{Key: tuple.NewTupleKey("group:fga", "member", "user:anne")},
 				}), nil
@@ -394,12 +407,12 @@ func TestReverseExpandIgnoresInvalidTuples(t *testing.T) {
 			ObjectType: "group",
 			Relation:   "member",
 			UserFilter: []*openfgav1.ObjectRelation{{Object: "group:fga", Relation: "member"}},
-		}).
+		}, gomock.Any()).
 			Times(1).
-			DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter) (storage.TupleIterator, error) {
+			DoAndReturn(func(_ context.Context, _ string, _ storage.ReadStartingWithUserFilter, _ storage.ReadStartingWithUserOptions) (storage.TupleIterator, error) {
 				return storage.NewStaticTupleIterator([]*openfgav1.Tuple{
 					// NOTE this tuple is invalid
-					{Key: tuple.NewTupleKey("group:eng#member", "member", "group:fga#member")},
+					{Key: tuple.NewTupleKey("group:eng", "member", "fail:fga#member")},
 				}), nil
 			}),
 	},
@@ -411,8 +424,13 @@ func TestReverseExpandIgnoresInvalidTuples(t *testing.T) {
 	errChan := make(chan error, 1)
 
 	go func() {
-		reverseExpandQuery := NewReverseExpandQuery(mockDatastore, typesystem.New(model))
-		err := reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
+		ts, err := typesystem.New(model)
+		if err != nil {
+			t.Error("unexpected error creating model", err)
+			return
+		}
+		reverseExpandQuery := NewReverseExpandQuery(mockDatastore, ts)
+		err = reverseExpandQuery.Execute(ctx, &ReverseExpandRequest{
 			StoreID:          storeID,
 			ObjectType:       "group",
 			Relation:         "member",
@@ -440,6 +458,363 @@ func TestReverseExpandIgnoresInvalidTuples(t *testing.T) {
 			return
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+func TestReverseExpandThrottle(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
+
+		type user
+
+		type document
+			relations
+				define viewer: [user]`)
+	mockController := gomock.NewController(t)
+	defer mockController.Finish()
+	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
+
+	ctx := context.Background()
+	typesys, err := typesystem.NewAndValidate(ctx, model)
+	require.NoError(t, err)
+
+	t.Run("dispatch_below_threshold_doesnt_call_throttle", func(t *testing.T) {
+		mockThrottler := mocks.NewMockThrottler(mockController)
+		reverseExpandQuery := NewReverseExpandQuery(
+			mockDatastore,
+			typesys,
+			WithDispatchThrottlerConfig(threshold.Config{
+				Throttler:    mockThrottler,
+				Threshold:    200,
+				MaxThreshold: 200,
+			}),
+		)
+		mockThrottler.EXPECT().Throttle(gomock.Any()).Times(0)
+		dispatchCountValue := uint32(190)
+		metadata := NewResolutionMetadata()
+		metadata.DispatchCounter.Store(dispatchCountValue)
+
+		reverseExpandQuery.throttle(ctx, dispatchCountValue, metadata)
+		require.False(t, metadata.WasThrottled.Load())
+	})
+
+	t.Run("above_threshold_should_call_throttle", func(t *testing.T) {
+		mockThrottler := mocks.NewMockThrottler(mockController)
+		reverseExpandQuery := NewReverseExpandQuery(
+			mockDatastore,
+			typesys,
+			WithDispatchThrottlerConfig(threshold.Config{
+				Throttler:    mockThrottler,
+				Threshold:    200,
+				MaxThreshold: 200,
+			}),
+		)
+		mockThrottler.EXPECT().Throttle(gomock.Any()).Times(1)
+		dispatchCountValue := uint32(201)
+		metadata := NewResolutionMetadata()
+		metadata.DispatchCounter.Store(dispatchCountValue)
+
+		reverseExpandQuery.throttle(ctx, dispatchCountValue, metadata)
+		require.True(t, metadata.WasThrottled.Load())
+	})
+
+	t.Run("zero_max_should_interpret_as_default", func(t *testing.T) {
+		mockThrottler := mocks.NewMockThrottler(mockController)
+		reverseExpandQuery := NewReverseExpandQuery(
+			mockDatastore,
+			typesys,
+			WithDispatchThrottlerConfig(threshold.Config{
+				Throttler:    mockThrottler,
+				Threshold:    200,
+				MaxThreshold: 0,
+			}),
+		)
+		mockThrottler.EXPECT().Throttle(gomock.Any()).Times(0)
+		dispatchCountValue := uint32(190)
+		metadata := NewResolutionMetadata()
+		metadata.DispatchCounter.Store(dispatchCountValue)
+
+		reverseExpandQuery.throttle(ctx, dispatchCountValue, metadata)
+		require.False(t, metadata.WasThrottled.Load())
+	})
+
+	t.Run("dispatch_should_use_request_threshold_if_available", func(t *testing.T) {
+		mockThrottler := mocks.NewMockThrottler(mockController)
+		reverseExpandQuery := NewReverseExpandQuery(
+			mockDatastore,
+			typesys,
+			WithDispatchThrottlerConfig(threshold.Config{
+				Throttler:    mockThrottler,
+				Threshold:    0,
+				MaxThreshold: 210,
+			}),
+		)
+		mockThrottler.EXPECT().Throttle(gomock.Any()).Times(1)
+		dispatchCountValue := uint32(201)
+		ctx := context.Background()
+		ctx = dispatch.ContextWithThrottlingThreshold(ctx, 200)
+		metadata := NewResolutionMetadata()
+		metadata.DispatchCounter.Store(dispatchCountValue)
+
+		reverseExpandQuery.throttle(ctx, dispatchCountValue, metadata)
+		require.True(t, metadata.WasThrottled.Load())
+	})
+
+	t.Run("should_respect_max_threshold", func(t *testing.T) {
+		mockThrottler := mocks.NewMockThrottler(mockController)
+		reverseExpandQuery := NewReverseExpandQuery(
+			mockDatastore,
+			typesys,
+			WithDispatchThrottlerConfig(threshold.Config{
+				Throttler:    mockThrottler,
+				Threshold:    200,
+				MaxThreshold: 300,
+			}),
+		)
+		mockThrottler.EXPECT().Throttle(gomock.Any()).Times(1)
+		dispatchCountValue := uint32(301)
+		ctx := context.Background()
+		ctx = dispatch.ContextWithThrottlingThreshold(ctx, 1000)
+		metadata := NewResolutionMetadata()
+
+		reverseExpandQuery.throttle(ctx, dispatchCountValue, metadata)
+		require.True(t, metadata.WasThrottled.Load())
+	})
+}
+
+func TestReverseExpandDispatchCount(t *testing.T) {
+	ds := memory.New()
+	t.Cleanup(ds.Close)
+	tests := []struct {
+		name                    string
+		model                   string
+		tuples                  []string
+		objectType              string
+		relation                string
+		user                    *UserRefObject
+		throttlingEnabled       bool
+		expectedDispatchCount   uint32
+		expectedThrottlingValue int
+		expectedWasThrottled    bool
+	}{
+		{
+			name: "should_throttle",
+			model: `
+				model
+					schema 1.1
+
+				type user
+
+				type folder
+					relations
+						define editor: [user]
+						define viewer: [user] or editor 
+			`,
+			tuples: []string{
+				"folder:C#editor@user:jon",
+				"folder:B#viewer@user:jon",
+				"folder:A#viewer@user:jon",
+			},
+			objectType:              "folder",
+			relation:                "viewer",
+			user:                    &UserRefObject{Object: &openfgav1.Object{Type: "user", Id: "jon"}},
+			throttlingEnabled:       true,
+			expectedWasThrottled:    true,
+			expectedDispatchCount:   4,
+			expectedThrottlingValue: 1,
+		},
+		{
+			name: "should_not_throttle",
+			model: `
+				model
+					schema 1.1
+			
+				type user
+			
+				type folder
+					relations
+						define editor: [user]
+						define viewer: [user] or editor
+			`,
+			tuples: []string{
+				"folder:C#editor@user:jon",
+				"folder:B#viewer@user:jon",
+				"folder:A#viewer@user:jon",
+			},
+			objectType:              "folder",
+			relation:                "viewer",
+			user:                    &UserRefObject{Object: &openfgav1.Object{Type: "user", Id: "jon"}},
+			throttlingEnabled:       false,
+			expectedWasThrottled:    false,
+			expectedDispatchCount:   4,
+			expectedThrottlingValue: 0,
+		},
+		{
+			name: "should_not_throttle_if_there_are_not_enough_dispatches",
+			model: `
+				model
+					schema 1.1
+			
+				type user
+			
+				type document
+					relations
+						define editor: [user]
+						define viewer: editor
+			`,
+			tuples: []string{
+				"document:1#editor@user:jon",
+			},
+			objectType:              "document",
+			relation:                "viewer",
+			user:                    &UserRefObject{Object: &openfgav1.Object{Type: "user", Id: "jon"}},
+			throttlingEnabled:       true,
+			expectedWasThrottled:    false,
+			expectedDispatchCount:   2,
+			expectedThrottlingValue: 0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			storeID, model := storagetest.BootstrapFGAStore(t, ds, test.model, test.tuples)
+			resultChan := make(chan *ReverseExpandResult)
+			errChan := make(chan error, 1)
+			typesys, err := typesystem.NewAndValidate(
+				context.Background(),
+				model,
+			)
+			require.NoError(t, err)
+			ctx := storage.ContextWithRelationshipTupleReader(context.Background(), ds)
+			ctrl := gomock.NewController(t)
+			ctx = typesystem.ContextWithTypesystem(ctx, typesys)
+			resolutionMetadata := NewResolutionMetadata()
+
+			mockThrottler := mocks.NewMockThrottler(ctrl)
+			t.Cleanup(ctrl.Finish)
+			mockThrottler.EXPECT().Throttle(gomock.Any()).Times(test.expectedThrottlingValue)
+
+			go func() {
+				q := NewReverseExpandQuery(
+					ds,
+					typesys,
+					WithDispatchThrottlerConfig(threshold.Config{
+						Throttler:    mockThrottler,
+						Enabled:      test.throttlingEnabled,
+						Threshold:    3,
+						MaxThreshold: 0,
+					}),
+				)
+
+				err = q.Execute(ctx, &ReverseExpandRequest{
+					StoreID:    storeID,
+					ObjectType: test.objectType,
+					Relation:   test.relation,
+					User:       test.user,
+				}, resultChan, resolutionMetadata)
+
+				if err != nil {
+					errChan <- err
+				}
+			}()
+
+		ConsumerLoop:
+			for {
+				select {
+				case _, open := <-resultChan:
+					if !open {
+						break ConsumerLoop
+					}
+				case err := <-errChan:
+					require.FailNow(t, "unexpected error received on error channel :%v", err)
+					break ConsumerLoop
+				case <-ctx.Done():
+					break ConsumerLoop
+				}
+			}
+			require.Equal(t, test.expectedDispatchCount, resolutionMetadata.DispatchCounter.Load())
+			require.Equal(t, test.expectedWasThrottled, resolutionMetadata.WasThrottled.Load())
+		})
+	}
+}
+
+func TestReverseExpandHonorsConsistency(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
+	store := ulid.Make().String()
+
+	model := testutils.MustTransformDSLToProtoWithID(`
+		model
+			schema 1.1
+
+		type user
+		type document
+			relations
+				define viewer: [user]`)
+
+	typeSystem, err := typesystem.New(model)
+	require.NoError(t, err)
+	mockController := gomock.NewController(t)
+	defer mockController.Finish()
+
+	ctx := context.Background()
+	mockDatastore := mocks.NewMockOpenFGADatastore(mockController)
+
+	// run once with no consistency specified
+	unspecifiedConsistency := storage.ReadStartingWithUserOptions{
+		Consistency: storage.ConsistencyOptions{Preference: openfgav1.ConsistencyPreference_UNSPECIFIED},
+	}
+	mockDatastore.EXPECT().
+		ReadStartingWithUser(gomock.Any(), store, gomock.Any(), unspecifiedConsistency).
+		Times(1)
+
+	request := &ReverseExpandRequest{
+		StoreID:    store,
+		ObjectType: "document",
+		Relation:   "viewer",
+		User: &UserRefObject{
+			Object: &openfgav1.Object{
+				Type: "user",
+				Id:   "maria",
+			},
+		},
+		ContextualTuples: []*openfgav1.TupleKey{},
+	}
+
+	reverseExpandQuery := NewReverseExpandQuery(mockDatastore, typeSystem)
+	resultChan := make(chan *ReverseExpandResult)
+
+	err = reverseExpandQuery.Execute(ctx, request, resultChan, NewResolutionMetadata())
+	require.NoError(t, err)
+
+	// now do it again with specified consistency
+	highConsistency := storage.ReadStartingWithUserOptions{
+		Consistency: storage.ConsistencyOptions{Preference: openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY},
+	}
+
+	request.Consistency = openfgav1.ConsistencyPreference_HIGHER_CONSISTENCY
+	mockDatastore.EXPECT().
+		ReadStartingWithUser(gomock.Any(), store, gomock.Any(), highConsistency).
+		Times(1)
+
+	resultChanTwo := make(chan *ReverseExpandResult)
+	err = reverseExpandQuery.Execute(ctx, request, resultChanTwo, NewResolutionMetadata())
+	require.NoError(t, err)
+
+	// Make sure we didn't leave channels open
+	select {
+	case _, open := <-resultChan:
+		if open {
+			require.FailNow(t, "results channels should be closed")
+		}
+	case _, open := <-resultChanTwo:
+		if open {
+			require.FailNow(t, "results channels should be closed")
 		}
 	}
 }

@@ -17,8 +17,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/hashicorp/go-retryablehttp"
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	parser "github.com/openfga/language/pkg/go/transformer"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	grpcbackoff "google.golang.org/grpc/backoff"
@@ -26,6 +24,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthv1pb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	parser "github.com/openfga/language/pkg/go/transformer"
 
 	serverconfig "github.com/openfga/openfga/internal/server/config"
 )
@@ -78,6 +79,14 @@ var (
 		return out
 	})
 )
+
+func ConvertTuplesToTupleKeys(input []*openfgav1.Tuple) []*openfgav1.TupleKey {
+	converted := make([]*openfgav1.TupleKey, len(input))
+	for i := range input {
+		converted[i] = input[i].GetKey()
+	}
+	return converted
+}
 
 func CreateRandomString(n int) string {
 	b := make([]byte, n)
@@ -142,6 +151,7 @@ func CreateGrpcConnection(t *testing.T, grpcAddress string, opts ...grpc.DialOpt
 
 	defaultOptions = append(defaultOptions, opts...)
 
+	// nolint:staticcheck // ignoring gRPC deprecations
 	conn, err := grpc.Dial(
 		grpcAddress, defaultOptions...,
 	)
@@ -173,6 +183,7 @@ func EnsureServiceHealthy(t testing.TB, grpcAddr, httpAddr string, transportCred
 	defer cancel()
 
 	t.Log("creating connection to address", grpcAddr)
+	// nolint:staticcheck // ignoring gRPC deprecations
 	conn, err := grpc.DialContext(
 		ctx,
 		grpcAddr,
@@ -224,14 +235,15 @@ func EnsureServiceHealthy(t testing.TB, grpcAddr, httpAddr string, transportCred
 // This function may panic if somehow a random port cannot be chosen.
 func MustDefaultConfigWithRandomPorts() *serverconfig.Config {
 	config := serverconfig.MustDefaultConfig()
+	config.Experimentals = append(config.Experimentals, "enable-check-optimizations")
 
 	httpPort, httpPortReleaser := TCPRandomPort()
 	defer httpPortReleaser()
 	grpcPort, grpcPortReleaser := TCPRandomPort()
 	defer grpcPortReleaser()
 
-	config.GRPC.Addr = fmt.Sprintf("0.0.0.0:%d", grpcPort)
-	config.HTTP.Addr = fmt.Sprintf("0.0.0.0:%d", httpPort)
+	config.GRPC.Addr = fmt.Sprintf("localhost:%d", grpcPort)
+	config.HTTP.Addr = fmt.Sprintf("localhost:%d", httpPort)
 
 	return config
 }
@@ -239,7 +251,7 @@ func MustDefaultConfigWithRandomPorts() *serverconfig.Config {
 // TCPRandomPort tries to find a random TCP Port. If it can't find one, it panics. Else, it returns the port and a function that releases the port.
 // It is the responsibility of the caller to call the release function right before trying to listen on the given port.
 func TCPRandomPort() (int, func()) {
-	l, err := net.Listen("tcp", "")
+	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		panic(err)
 	}

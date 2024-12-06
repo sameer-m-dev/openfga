@@ -6,18 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"sync"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
-	"github.com/go-sql-driver/mysql"
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 	"github.com/pressly/goose/v3"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+
 	"github.com/openfga/openfga/internal/build"
+	"github.com/openfga/openfga/pkg/encoder"
 	"github.com/openfga/openfga/pkg/logger"
 	"github.com/openfga/openfga/pkg/storage"
 	tupleUtils "github.com/openfga/openfga/pkg/tuple"
@@ -187,22 +188,40 @@ func NewContToken(ulid, objectType string) *ContToken {
 	}
 }
 
-// UnmarshallContToken takes a string representation of a continuation
-// token and attempts to unmarshal it into a ContToken struct.
-func UnmarshallContToken(from string) (*ContToken, error) {
-	var token ContToken
-	if err := json.Unmarshal([]byte(from), &token); err != nil {
-		return nil, storage.ErrInvalidContinuationToken
+// MarshallContToken takes a ContToken struct and attempts to marshal it into a string.
+
+func NewSQLContinuationTokenSerializer() encoder.ContinuationTokenSerializer {
+	return &SQLContinuationTokenSerializer{}
+}
+
+type SQLContinuationTokenSerializer struct{}
+
+func (s *SQLContinuationTokenSerializer) Serialize(ulid string, objType string) ([]byte, error) {
+	if ulid == "" {
+		return nil, errors.New("empty ulid provided for continuation token")
 	}
-	return &token, nil
+	return json.Marshal(NewContToken(ulid, objType))
+}
+
+func (s *SQLContinuationTokenSerializer) Deserialize(continuationToken string) (ulid string, objType string, err error) {
+	var token ContToken
+	if err := json.Unmarshal([]byte(continuationToken), &token); err != nil {
+		return "", "", storage.ErrInvalidContinuationToken
+	}
+	return token.Ulid, token.ObjectType, nil
 }
 
 // SQLTupleIterator is a struct that implements the storage.TupleIterator
 // interface for iterating over tuples fetched from a SQL database.
 type SQLTupleIterator struct {
-	rows     *sql.Rows
-	resultCh chan *storage.TupleRecord
-	errCh    chan error
+	rows *sql.Rows // GUARDED_BY(mu)
+
+	// firstRow is used as a temporary storage place if head is called.
+	// If firstRow is nil and Head is called, rows.Next() will return the first item and advance
+	// the iterator. Thus, we will need to store this first item so that future Head() and Next()
+	// will use this item instead. Otherwise, the first item will be lost.
+	firstRow *storage.TupleRecord // GUARDED_BY(mu)
+	mu       sync.Mutex
 }
 
 // Ensures that SQLTupleIterator implements the TupleIterator interface.
@@ -212,12 +231,89 @@ var _ storage.TupleIterator = (*SQLTupleIterator)(nil)
 func NewSQLTupleIterator(rows *sql.Rows) *SQLTupleIterator {
 	return &SQLTupleIterator{
 		rows:     rows,
-		resultCh: make(chan *storage.TupleRecord, 1),
-		errCh:    make(chan error, 1),
+		firstRow: nil,
+		mu:       sync.Mutex{},
 	}
 }
 
 func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
+	t.mu.Lock()
+
+	if t.firstRow != nil {
+		// If head was called previously, we don't need to scan / next
+		// again as the data is already there and the internal iterator would be advanced via `t.rows.Next()`.
+		// Calling t.rows.Next() in this case would lose the first row data.
+		//
+		// For example, let's say there are 3 items [1,2,3]
+		// If we called Head() and t.firstRow is empty, the rows will only be left with [2,3].
+		// Thus, we will need to save item [1] in firstRow.  This allows future next() and head() to consume
+		// [1] first.
+		// If head() was not called, t.firstRow would be nil and we can follow the t.rows.Next() logic below.
+		firstRow := t.firstRow
+		t.firstRow = nil
+		t.mu.Unlock()
+		return firstRow, nil
+	}
+
+	if !t.rows.Next() {
+		t.mu.Unlock()
+		if err := t.rows.Err(); err != nil {
+			return nil, err
+		}
+		return nil, storage.ErrIteratorDone
+	}
+
+	var conditionName sql.NullString
+	var conditionContext []byte
+	var record storage.TupleRecord
+	err := t.rows.Scan(
+		&record.Store,
+		&record.ObjectType,
+		&record.ObjectID,
+		&record.Relation,
+		&record.User,
+		&conditionName,
+		&conditionContext,
+		&record.Ulid,
+		&record.InsertedAt,
+	)
+	t.mu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+
+	record.ConditionName = conditionName.String
+
+	if conditionContext != nil {
+		var conditionContextStruct structpb.Struct
+		if err := proto.Unmarshal(conditionContext, &conditionContextStruct); err != nil {
+			return nil, err
+		}
+		record.ConditionContext = &conditionContextStruct
+	}
+
+	return &record, nil
+}
+
+func (t *SQLTupleIterator) head() (*storage.TupleRecord, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.firstRow != nil {
+		// If head was called previously, we don't need to scan / next
+		// again as the data is already there and the internal iterator would be advanced via `t.rows.Next()`.
+		// Calling t.rows.Next() in this case would lose the first row data.
+		//
+		// For example, let's say there are 3 items [1,2,3]
+		// If we called Head() and t.firstRow is empty, the rows will only be left with [2,3].
+		// Thus, we will need to save item [1] in firstRow.  This allows future next() and head() to return
+		// [1] first. Note that for head(), we will not unset t.firstRow.  Therefore, calling head() multiple times
+		// will yield the same result.
+		// If head() was not called, t.firstRow would be nil, and we can follow the t.rows.Next() logic below.
+		return t.firstRow, nil
+	}
+
 	if !t.rows.Next() {
 		if err := t.rows.Err(); err != nil {
 			return nil, err
@@ -252,6 +348,7 @@ func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
 		}
 		record.ConditionContext = &conditionContextStruct
 	}
+	t.firstRow = &record
 
 	return &record, nil
 }
@@ -260,15 +357,15 @@ func (t *SQLTupleIterator) next() (*storage.TupleRecord, error) {
 // If the continuation token exists it is the ulid of the last element of the returned array.
 func (t *SQLTupleIterator) ToArray(
 	opts storage.PaginationOptions,
-) ([]*openfgav1.Tuple, []byte, error) {
+) ([]*openfgav1.Tuple, string, error) {
 	var res []*openfgav1.Tuple
 	for i := 0; i < opts.PageSize; i++ {
 		tupleRecord, err := t.next()
 		if err != nil {
-			if err == storage.ErrIteratorDone {
-				return res, nil, nil
+			if errors.Is(err, storage.ErrIteratorDone) {
+				return res, "", nil
 			}
-			return nil, nil, err
+			return nil, "", err
 		}
 		res = append(res, tupleRecord.AsTuple())
 	}
@@ -279,17 +376,12 @@ func (t *SQLTupleIterator) ToArray(
 	tupleRecord, err := t.next()
 	if err != nil {
 		if errors.Is(err, storage.ErrIteratorDone) {
-			return res, nil, nil
+			return res, "", nil
 		}
-		return nil, nil, err
+		return nil, "", err
 	}
 
-	contToken, err := json.Marshal(NewContToken(tupleRecord.Ulid, ""))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return res, contToken, nil
+	return res, tupleRecord.Ulid, nil
 }
 
 // Next will return the next available item.
@@ -306,50 +398,40 @@ func (t *SQLTupleIterator) Next(ctx context.Context) (*openfgav1.Tuple, error) {
 	return record.AsTuple(), nil
 }
 
+// Head will return the first available item.
+func (t *SQLTupleIterator) Head(ctx context.Context) (*openfgav1.Tuple, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	record, err := t.head()
+	if err != nil {
+		return nil, err
+	}
+
+	return record.AsTuple(), nil
+}
+
 // Stop terminates iteration.
 func (t *SQLTupleIterator) Stop() {
 	t.rows.Close()
 }
 
-// HandleSQLError processes an SQL error and converts it into a more
-// specific error type based on the nature of the SQL error.
-func HandleSQLError(err error, args ...interface{}) error {
-	if errors.Is(err, sql.ErrNoRows) {
-		return storage.ErrNotFound
-	} else if errors.Is(err, storage.ErrIteratorDone) {
-		return err
-	} else if strings.Contains(err.Error(), "duplicate key value") { // Postgres.
-		if len(args) > 0 {
-			if tk, ok := args[0].(*openfgav1.TupleKey); ok {
-				return storage.InvalidWriteInputError(tk, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE)
-			}
-		}
-		return storage.ErrCollision
-	} else if me, ok := err.(*mysql.MySQLError); ok && me.Number == 1062 {
-		if len(args) > 0 {
-			if tk, ok := args[0].(*openfgav1.TupleKey); ok {
-				return storage.InvalidWriteInputError(tk, openfgav1.TupleOperation_TUPLE_OPERATION_WRITE)
-			}
-		}
-		return storage.ErrCollision
-	}
-
-	return fmt.Errorf("sql error: %w", err)
-}
-
 // DBInfo encapsulates DB information for use in common method.
 type DBInfo struct {
-	db      *sql.DB
-	stbl    sq.StatementBuilderType
-	sqlTime interface{}
+	db             *sql.DB
+	stbl           sq.StatementBuilderType
+	HandleSQLError errorHandlerFn
 }
 
+type errorHandlerFn func(error, ...interface{}) error
+
 // NewDBInfo constructs a [DBInfo] object.
-func NewDBInfo(db *sql.DB, stbl sq.StatementBuilderType, sqlTime interface{}) *DBInfo {
+func NewDBInfo(db *sql.DB, stbl sq.StatementBuilderType, errorHandler errorHandlerFn) *DBInfo {
 	return &DBInfo{
-		db:      db,
-		stbl:    stbl,
-		sqlTime: sqlTime,
+		db:             db,
+		stbl:           stbl,
+		HandleSQLError: errorHandler,
 	}
 }
 
@@ -364,7 +446,7 @@ func Write(
 ) error {
 	txn, err := dbInfo.db.BeginTx(ctx, nil)
 	if err != nil {
-		return HandleSQLError(err)
+		return dbInfo.HandleSQLError(err)
 	}
 	defer func() {
 		_ = txn.Rollback()
@@ -395,12 +477,12 @@ func Write(
 			RunWith(txn). // Part of a txn.
 			ExecContext(ctx)
 		if err != nil {
-			return HandleSQLError(err, tk)
+			return dbInfo.HandleSQLError(err, tk)
 		}
 
 		rowsAffected, err := res.RowsAffected()
 		if err != nil {
-			return HandleSQLError(err)
+			return dbInfo.HandleSQLError(err)
 		}
 
 		if rowsAffected != 1 {
@@ -415,7 +497,7 @@ func Write(
 			tk.GetRelation(), tk.GetUser(),
 			"", nil, // Redact condition info for deletes since we only need the base triplet (object, relation, user).
 			openfgav1.TupleOperation_TUPLE_OPERATION_DELETE,
-			id, dbInfo.sqlTime,
+			id, sq.Expr("NOW()"),
 		)
 	}
 
@@ -430,7 +512,7 @@ func Write(
 		id := ulid.MustNew(ulid.Timestamp(now), ulid.DefaultEntropy()).String()
 		objectType, objectID := tupleUtils.SplitObject(tk.GetObject())
 
-		conditionName, conditionContext, err := marshalRelationshipCondition(tk.GetCondition())
+		conditionName, conditionContext, err := MarshalRelationshipCondition(tk.GetCondition())
 		if err != nil {
 			return err
 		}
@@ -446,12 +528,12 @@ func Write(
 				conditionName,
 				conditionContext,
 				id,
-				dbInfo.sqlTime,
+				sq.Expr("NOW()"),
 			).
 			RunWith(txn). // Part of a txn.
 			ExecContext(ctx)
 		if err != nil {
-			return HandleSQLError(err, tk)
+			return dbInfo.HandleSQLError(err, tk)
 		}
 
 		changelogBuilder = changelogBuilder.Values(
@@ -464,25 +546,25 @@ func Write(
 			conditionContext,
 			openfgav1.TupleOperation_TUPLE_OPERATION_WRITE,
 			id,
-			dbInfo.sqlTime,
+			sq.Expr("NOW()"),
 		)
 	}
 
 	if len(writes) > 0 || len(deletes) > 0 {
 		_, err := changelogBuilder.RunWith(txn).ExecContext(ctx) // Part of a txn.
 		if err != nil {
-			return HandleSQLError(err)
+			return dbInfo.HandleSQLError(err)
 		}
 	}
 
 	if err := txn.Commit(); err != nil {
-		return HandleSQLError(err)
+		return dbInfo.HandleSQLError(err)
 	}
 
 	return nil
 }
 
-// WriteAuthorizationModel writes an authorization model for the given store.
+// WriteAuthorizationModel writes an authorization model for the given store in one row.
 func WriteAuthorizationModel(
 	ctx context.Context,
 	dbInfo *DBInfo,
@@ -507,23 +589,25 @@ func WriteAuthorizationModel(
 		Values(store, model.GetId(), schemaVersion, "", nil, pbdata).
 		ExecContext(ctx)
 	if err != nil {
-		return HandleSQLError(err)
+		return dbInfo.HandleSQLError(err)
 	}
 
 	return nil
 }
 
+// constructAuthorizationModelFromSQLRows tries first to read and return a model that was written in one row (the new format).
+// If it can't find one, it will then look for a model that was written across multiple rows (the old format).
 func constructAuthorizationModelFromSQLRows(rows *sql.Rows) (*openfgav1.AuthorizationModel, error) {
 	var modelID string
 	var schemaVersion string
 	var typeDefs []*openfgav1.TypeDefinition
-	for rows.Next() {
+	if rows.Next() {
 		var typeName string
 		var marshalledTypeDef []byte
 		var marshalledModel []byte
 		err := rows.Scan(&modelID, &schemaVersion, &typeName, &marshalledTypeDef, &marshalledModel)
 		if err != nil {
-			return nil, HandleSQLError(err)
+			return nil, err
 		}
 
 		if len(marshalledModel) > 0 {
@@ -544,8 +628,29 @@ func constructAuthorizationModelFromSQLRows(rows *sql.Rows) (*openfgav1.Authoriz
 		typeDefs = append(typeDefs, &typeDef)
 	}
 
+	for rows.Next() {
+		var scannedModelID string
+		var typeName string
+		var marshalledTypeDef []byte
+		var marshalledModel []byte
+		err := rows.Scan(&scannedModelID, &schemaVersion, &typeName, &marshalledTypeDef, &marshalledModel)
+		if err != nil {
+			return nil, err
+		}
+		if scannedModelID != modelID {
+			break
+		}
+
+		var typeDef openfgav1.TypeDefinition
+		if err := proto.Unmarshal(marshalledTypeDef, &typeDef); err != nil {
+			return nil, err
+		}
+
+		typeDefs = append(typeDefs, &typeDef)
+	}
+
 	if err := rows.Err(); err != nil {
-		return nil, HandleSQLError(err)
+		return nil, err
 	}
 
 	if len(typeDefs) == 0 {
@@ -556,6 +661,7 @@ func constructAuthorizationModelFromSQLRows(rows *sql.Rows) (*openfgav1.Authoriz
 		SchemaVersion:   schemaVersion,
 		Id:              modelID,
 		TypeDefinitions: typeDefs,
+		// Conditions don't exist in the old data format
 	}, nil
 }
 
@@ -570,13 +676,17 @@ func FindLatestAuthorizationModel(
 		From("authorization_model").
 		Where(sq.Eq{"store": store}).
 		OrderBy("authorization_model_id desc").
-		Limit(1).
 		QueryContext(ctx)
 	if err != nil {
-		return nil, HandleSQLError(err)
+		return nil, dbInfo.HandleSQLError(err)
 	}
 	defer rows.Close()
-	return constructAuthorizationModelFromSQLRows(rows)
+	ret, err := constructAuthorizationModelFromSQLRows(rows)
+	if err != nil {
+		return nil, dbInfo.HandleSQLError(err)
+	}
+
+	return ret, nil
 }
 
 // ReadAuthorizationModel reads the model corresponding to store and model ID.
@@ -594,10 +704,15 @@ func ReadAuthorizationModel(
 		}).
 		QueryContext(ctx)
 	if err != nil {
-		return nil, HandleSQLError(err)
+		return nil, dbInfo.HandleSQLError(err)
 	}
 	defer rows.Close()
-	return constructAuthorizationModelFromSQLRows(rows)
+	ret, err := constructAuthorizationModelFromSQLRows(rows)
+	if err != nil {
+		return nil, dbInfo.HandleSQLError(err)
+	}
+
+	return ret, nil
 }
 
 // IsReady returns true if the connection to the datastore is successful
@@ -625,4 +740,11 @@ func IsReady(ctx context.Context, db *sql.DB) (storage.ReadinessStatus, error) {
 	return storage.ReadinessStatus{
 		IsReady: true,
 	}, nil
+}
+
+func AddFromUlid(sb sq.SelectBuilder, fromUlid string, sortDescending bool) sq.SelectBuilder {
+	if sortDescending {
+		return sb.Where(sq.Lt{"ulid": fromUlid})
+	}
+	return sb.Where(sq.Gt{"ulid": fromUlid})
 }

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
-	openfgav1 "github.com/openfga/api/proto/openfga/v1"
-	parser "github.com/openfga/language/pkg/go/transformer"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	openfgav1 "github.com/openfga/api/proto/openfga/v1"
+	parser "github.com/openfga/language/pkg/go/transformer"
 
 	"github.com/openfga/openfga/internal/graph"
 	"github.com/openfga/openfga/internal/mocks"
@@ -54,12 +55,13 @@ func TestListObjects(t *testing.T, ds storage.OpenFGADatastore) {
 	testCases := []listObjectsTestCase{
 		{
 			name: "max_results_equal_0_with_simple_model",
-			model: `model
-	schema 1.1
-type user
-type repo
-  relations
-	define admin: [user]`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type repo
+					relations
+						define admin: [user]`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("repo:1", "admin", "user:alice"),
 				tuple.NewTupleKey("repo:2", "admin", "user:alice"),
@@ -77,12 +79,13 @@ type repo
 		},
 		{
 			name: "max_results_equal_2_with_simple_model",
-			model: `model
-	schema 1.1
-type user
-type repo
-  relations
-	define admin: [user]`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type repo
+					relations
+						define admin: [user]`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("repo:1", "admin", "user:alice"),
 				tuple.NewTupleKey("repo:2", "admin", "user:alice"),
@@ -100,13 +103,14 @@ type repo
 		},
 		{
 			name: "max_results_with_model_that_uses_exclusion",
-			model: `model
-	schema 1.1
-type user
-type org
-  relations
-	define blocked: [user]
-	define admin: [user] but not blocked`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type org
+					relations
+						define blocked: [user]
+						define admin: [user] but not blocked`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("org:1", "admin", "user:charlie"),
 				tuple.NewTupleKey("org:2", "admin", "user:charlie"),
@@ -124,13 +128,14 @@ type org
 		},
 		{
 			name: "max_results_with_model_that_uses_exclusion_and_one_object_is_a_false_candidate",
-			model: `model
-	schema 1.1
-type user
-type org
-  relations
-	define blocked: [user]
-	define admin: [user] but not blocked`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type org
+					relations
+						define blocked: [user]
+						define admin: [user] but not blocked`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("org:2", "blocked", "user:charlie"),
 				tuple.NewTupleKey("org:1", "admin", "user:charlie"),
@@ -148,13 +153,14 @@ type org
 		},
 		{
 			name: "respects_when_schema_1_1_and_maxresults_is_higher_than_actual_result_length",
-			model: `model
-	schema 1.1
-type user
+			model: `
+				model
+					schema 1.1
+				type user
 
-type team
-  relations
-	define admin: [user]`,
+				type team
+					relations
+						define admin: [user]`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("team:1", "admin", "user:bob"),
 			},
@@ -168,12 +174,13 @@ type team
 		},
 		{
 			name: "respects_max_results_when_deadline_timeout_and_returns_no_error_and_no_results",
-			model: `model
-	schema 1.1
-type user
-type repo
-  relations
-	define admin: [user]`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type repo
+					relations
+						define admin: [user]`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("repo:1", "admin", "user:alice"),
 				tuple.NewTupleKey("repo:2", "admin", "user:alice"),
@@ -191,12 +198,13 @@ type repo
 		},
 		{
 			name: "list_object_use_check_cache",
-			model: `model
-	schema 1.1
-type user
-type repo
-  relations
-	define admin: [user]`,
+			model: `
+				model
+					schema 1.1
+				type user
+				type repo
+					relations
+						define admin: [user]`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKey("repo:1", "admin", "user:alice"),
 				tuple.NewTupleKey("repo:2", "admin", "user:alice"),
@@ -215,16 +223,17 @@ type repo
 		},
 		{
 			name: "condition_with_tuples",
-			model: `model
-  schema 1.1
-type user
-type document
-  relations
-    define viewer: [user with condition1]
+			model: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user with condition1]
 
-condition condition1(param1: string) {
-  param1 == 'ok'
-}`,
+				condition condition1(param1: string) {
+					param1 == 'ok'
+				}`,
 			tuples: []*openfgav1.TupleKey{
 				{
 					User:     "user:anne",
@@ -256,16 +265,17 @@ condition condition1(param1: string) {
 		},
 		{
 			name: "condition_with_contextual_tuples",
-			model: `model
-  schema 1.1
-type user
-type document
-  relations
-    define viewer: [user with condition1]
+			model: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user with condition1]
 
-condition condition1(param1: string) {
-  param1 == 'ok'
-}`,
+				condition condition1(param1: string) {
+					param1 == 'ok'
+				}`,
 			tuples:     nil,
 			user:       "user:anne",
 			objectType: "document",
@@ -299,16 +309,17 @@ condition condition1(param1: string) {
 		},
 		{
 			name: "condition_with_tuples_and_contextual_tuples",
-			model: `model
-  schema 1.1
-type user
-type document
-  relations
-    define viewer: [user with condition1]
+			model: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user with condition1]
 
-condition condition1(param1: string) {
-  param1 == 'ok'
-}`,
+				condition condition1(param1: string) {
+					param1 == 'ok'
+				}`,
 			tuples: []*openfgav1.TupleKey{
 				{
 					User:     "user:anne",
@@ -361,16 +372,17 @@ condition condition1(param1: string) {
 		},
 		{
 			name: "condition_with_tuples_and_contextual_tuples_and_context",
-			model: `model
-  schema 1.1
-type user
-type document
-  relations
-    define viewer: [user with condition1]
+			model: `
+				model
+					schema 1.1
+				type user
+				type document
+					relations
+						define viewer: [user with condition1]
 
-condition condition1(param1: string, param2: string) {
-  param1 == 'ok' && param2 == 'ok'
-}`,
+				condition condition1(param1: string, param2: string) {
+					param1 == 'ok' && param2 == 'ok'
+				}`,
 			tuples: []*openfgav1.TupleKey{
 				{
 					User:     "user:anne",
@@ -424,23 +436,24 @@ condition condition1(param1: string, param2: string) {
 		},
 		{
 			name: "condition_in_ttu_relationships",
-			model: `model
-  schema 1.1
+			model: `
+				model
+					schema 1.1
 
-type user
+				type user
 
-type folder
-  relations
-    define viewer: [user]
+				type folder
+					relations
+						define viewer: [user]
 
-type document
-  relations
-    define parent: [folder with condition1]
-	define viewer: viewer from parent
+				type document
+					relations
+						define parent: [folder with condition1]
+							define viewer: viewer from parent
 
-condition condition1(x: int) {
-  x < 100
-}`,
+				condition condition1(x: int) {
+					x < 100
+				}`,
 			tuples: []*openfgav1.TupleKey{
 				tuple.NewTupleKeyWithCondition("document:1", "parent", "folder:x", "condition1", nil),
 				tuple.NewTupleKey("folder:x", "viewer", "user:jon"),
@@ -479,7 +492,10 @@ condition condition1(x: int) {
 				datastore = mocks.NewMockSlowDataStorage(ds, test.readTuplesDelay)
 			}
 
-			ctx = typesystem.ContextWithTypesystem(ctx, typesystem.New(model))
+			ts, err := typesystem.New(model)
+			require.NoError(t, err)
+
+			ctx = typesystem.ContextWithTypesystem(ctx, ts)
 
 			opts := []commands.ListObjectsQueryOption{
 				commands.WithListObjectsMaxResults(test.maxResults),
@@ -490,17 +506,20 @@ condition condition1(x: int) {
 				opts = append(opts, commands.WithListObjectsDeadline(test.listObjectsDeadline))
 			}
 
-			checkResolver, closer := graph.NewLayeredCheckResolver(
-				[]graph.LocalCheckerOption{
-					graph.WithResolveNodeBreadthLimit(100),
-					graph.WithMaxConcurrentReads(30),
-				},
-				test.useCheckCache,
-				[]graph.CachedCheckResolverOpt{
-					graph.WithMaxCacheSize(100),
-					graph.WithCacheTTL(10 * time.Second),
-				},
-			)
+			localCheckOpts := []graph.LocalCheckerOption{
+				graph.WithResolveNodeBreadthLimit(100),
+				graph.WithMaxConcurrentReads(30),
+			}
+			cacheOpts := []graph.CachedCheckResolverOpt{
+				graph.WithMaxCacheSize(100),
+				graph.WithCacheTTL(10 * time.Second),
+			}
+			checkBuilderOpts := []graph.CheckResolverOrderedBuilderOpt{
+				graph.WithCachedCheckResolverOpts(test.useCheckCache, cacheOpts...),
+				graph.WithLocalCheckerOpts(localCheckOpts...),
+			}
+			checkResolver, closer, err := graph.NewOrderedCheckResolvers(checkBuilderOpts...).Build()
+			require.NoError(t, err)
 			t.Cleanup(closer)
 
 			listObjectsQuery, err := commands.NewListObjectsQuery(datastore, checkResolver, opts...)
@@ -583,17 +602,18 @@ func setupListObjectsBenchmark(b *testing.B, ds storage.OpenFGADatastore, storeI
 		Id:            modelID,
 		SchemaVersion: typesystem.SchemaVersion1_1,
 		// this model exercises all possible execution paths: "direct" edge and "computed userset" edge and "TTU" edge
-		TypeDefinitions: parser.MustTransformDSLToProto(`model
-	schema 1.1
-type user
-type folder
-  relations
-    define viewer: [user]
-type document
-  relations
-	define viewer: [user]
-	define parent: [folder]
-	define can_view: viewer or viewer from parent`).GetTypeDefinitions(),
+		TypeDefinitions: parser.MustTransformDSLToProto(`
+			model
+				schema 1.1
+			type user
+			type folder
+				relations
+					define viewer: [user]
+			type document
+				relations
+					define viewer: [user]
+					define parent: [folder]
+					define can_view: viewer or viewer from parent`).GetTypeDefinitions(),
 	}
 	err := ds.WriteAuthorizationModel(context.Background(), storeID, model)
 	require.NoError(b, err)
@@ -622,7 +642,9 @@ func BenchmarkListObjects(b *testing.B, ds storage.OpenFGADatastore) {
 	store := ulid.Make().String()
 
 	model, modelID, numberObjectsAccessible := setupListObjectsBenchmark(b, ds, store)
-	ctx = typesystem.ContextWithTypesystem(ctx, typesystem.New(model))
+	ts, err := typesystem.New(model)
+	require.NoError(b, err)
+	ctx = typesystem.ContextWithTypesystem(ctx, ts)
 
 	req := &openfgav1.ListObjectsRequest{
 		StoreId:              store,
@@ -636,17 +658,22 @@ func BenchmarkListObjects(b *testing.B, ds storage.OpenFGADatastore) {
 
 	var oneResultIterations, allResultsIterations int
 
+	checkResolver, checkResolverCloser, err := graph.NewOrderedCheckResolvers().Build()
+	require.NoError(b, err)
+	b.Cleanup(checkResolverCloser)
+
 	b.Run("oneResult", func(b *testing.B) {
 		listObjectsQuery, err := commands.NewListObjectsQuery(
 			ds,
-			graph.NewLocalCheckerWithCycleDetection(),
+			checkResolver,
 			commands.WithListObjectsMaxResults(1),
 		)
 		require.NoError(b, err)
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			r, _ := listObjectsQuery.Execute(ctx, req)
+			r, err := listObjectsQuery.Execute(ctx, req)
+			require.NoError(b, err)
 			require.Len(b, r.Objects, 1)
 		}
 
@@ -656,15 +683,17 @@ func BenchmarkListObjects(b *testing.B, ds storage.OpenFGADatastore) {
 	b.Run("allResults", func(b *testing.B) {
 		listObjectsQuery, err := commands.NewListObjectsQuery(
 			ds,
-			graph.NewLocalCheckerWithCycleDetection(),
+			checkResolver,
 			commands.WithListObjectsMaxResults(0),
 		)
 		require.NoError(b, err)
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			r, _ := listObjectsQuery.Execute(ctx, req)
-			require.Len(b, r.Objects, numberObjectsAccessible)
+			r, err := listObjectsQuery.Execute(ctx, req)
+			require.NoError(b, err)
+			totalObjects := len(r.Objects)
+			require.Equal(b, numberObjectsAccessible, totalObjects, "total number of records returned should match")
 		}
 
 		listObjectsResponse = r

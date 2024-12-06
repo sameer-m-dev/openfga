@@ -9,6 +9,7 @@ import (
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
+
 	openfgav1 "github.com/openfga/api/proto/openfga/v1"
 )
 
@@ -157,7 +158,7 @@ func stringToIPAddress(arg ref.Val) ref.Val {
 
 	ipaddr, err := ParseIPAddress(ipStr)
 	if err != nil {
-		return types.NewErr(err.Error())
+		return types.NewErr("%s", err.Error())
 	}
 
 	return ipaddr

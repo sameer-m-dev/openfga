@@ -13,6 +13,7 @@ import (
 	"github.com/openfga/openfga/pkg/storage/mysql"
 	"github.com/openfga/openfga/pkg/storage/postgres"
 	"github.com/openfga/openfga/pkg/storage/sqlcommon"
+	"github.com/openfga/openfga/pkg/storage/sqlite"
 	"github.com/openfga/openfga/pkg/typesystem"
 )
 
@@ -63,6 +64,8 @@ func runValidate(_ *cobra.Command, _ []string) error {
 		db, err = mysql.New(uri, sqlcommon.NewConfig())
 	case "postgres":
 		db, err = postgres.New(uri, sqlcommon.NewConfig())
+	case "sqlite":
+		db, err = sqlite.New(uri, sqlcommon.NewConfig())
 	case "":
 		return fmt.Errorf("missing datastore engine type")
 	case "memory":
@@ -98,10 +101,10 @@ func ValidateAllAuthorizationModels(ctx context.Context, db storage.OpenFGADatas
 
 	for {
 		// fetch a page of stores
-		stores, tokenStores, err := db.ListStores(ctx, storage.PaginationOptions{
-			PageSize: 100,
-			From:     continuationTokenStores,
-		})
+		opts := storage.ListStoresOptions{
+			Pagination: storage.NewPaginationOptions(100, continuationTokenStores),
+		}
+		stores, tokenStores, err := db.ListStores(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("error reading stores: %w", err)
 		}
@@ -117,10 +120,10 @@ func ValidateAllAuthorizationModels(ctx context.Context, db storage.OpenFGADatas
 
 			for {
 				// fetch a page of models for that store
-				models, tokenModels, err := db.ReadAuthorizationModels(ctx, store.GetId(), storage.PaginationOptions{
-					PageSize: 100,
-					From:     continuationTokenModels,
-				})
+				opts := storage.ReadAuthorizationModelsOptions{
+					Pagination: storage.NewPaginationOptions(100, continuationTokenModels),
+				}
+				models, tokenModels, err := db.ReadAuthorizationModels(ctx, store.GetId(), opts)
 				if err != nil {
 					return nil, fmt.Errorf("error reading authorization models: %w", err)
 				}
@@ -141,7 +144,7 @@ func ValidateAllAuthorizationModels(ctx context.Context, db storage.OpenFGADatas
 					validationResults = append(validationResults, validationResult)
 				}
 
-				continuationTokenModels = string(tokenModels)
+				continuationTokenModels = tokenModels
 
 				if continuationTokenModels == "" {
 					break
@@ -150,7 +153,7 @@ func ValidateAllAuthorizationModels(ctx context.Context, db storage.OpenFGADatas
 		}
 
 		// next page of stores
-		continuationTokenStores = string(tokenStores)
+		continuationTokenStores = tokenStores
 
 		if continuationTokenStores == "" {
 			break
